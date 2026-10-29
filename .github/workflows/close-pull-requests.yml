@@ -23,4 +23,4 @@ jobs:
           GH_REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          gh pr close "$NUMBER" --comment "Thanks for taking the time. This repository is published from Ronana's internal source, so pull requests cannot be merged here. Please open an issue describing the change instead, and we will take it from there. For anything security related, see SECURITY.md."
+          gh pr close "$NUMBER" --comment "Thanks for taking the time. This repository is published from Ronana's internal source, so pull requests cannot be merged here. Please open an issue describing the change instead, and we will take it from there."

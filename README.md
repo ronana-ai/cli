@@ -140,27 +140,3 @@ in `input_schema`. A media field takes a public https URL or a Ronana id
 
 Generations and uploads appear in your Ronana library. Your plan's storage
 limits and retention apply.
-
-## Security and privacy
-
-- **No API key.** You sign in through your browser. The sign-in is kept in
-  your system keychain, never in a file. `ronana auth logout` revokes it, and
-  **Account > Connections** on ronana.ai disconnects any app.
-- **Limited access.** The sign-in can read your library, upload files, and start
-  generations. It cannot change your account, plan or payment details.
-- **Your files.** The CLI reads only the files you name in a command. The local
-  MCP server reads only inside `RONANA_MCP_UPLOAD_ROOT`.
-- **No tracking.** It sends no analytics. It talks only to the Ronana server
-  you signed in to, and to the signed storage links that server returns for
-  uploads and downloads.
-- **Open source.** The code is at
-  [github.com/ronana-ai/cli](https://github.com/ronana-ai/cli). Releases are
-  published from that repository with npm provenance, so npm shows the exact
-  commit each version was built from.
-
-Found a security problem? See the
-[security policy](https://github.com/ronana-ai/cli/blob/main/SECURITY.md).
-
-## License
-
-MIT
