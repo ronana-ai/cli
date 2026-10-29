@@ -38,8 +38,18 @@ async function resolveInsideRoot(inputPath: string): Promise<string> {
 async function serve() {
   const remote = await remoteClient();
   const { tools } = await remote.listTools();
+  // Present as Ronana itself: the remote server's own title, logo and website,
+  // so an app lists this bridge with the Ronana mark rather than a bare name.
+  const remoteInfo = remote.getServerVersion();
+  const icons = remoteInfo?.icons;
   serveStdio(() => {
-    const server = new McpServer({ name: "Ronana local bridge", version: "1.0.0" });
+    const server = new McpServer({
+      name: "ronana",
+      title: remoteInfo?.title ?? "Ronana",
+      version: "1.0.0",
+      ...(remoteInfo?.websiteUrl ? { websiteUrl: remoteInfo.websiteUrl } : {}),
+      ...(icons ? { icons } : {}),
+    });
     for (const tool of tools) {
       server.registerTool(tool.name, {
         title: tool.title,
@@ -47,6 +57,7 @@ async function serve() {
         inputSchema: fromJsonSchema(tool.inputSchema as any),
         outputSchema: tool.outputSchema ? fromJsonSchema(tool.outputSchema as any) : undefined,
         annotations: tool.annotations,
+        ...(tool.icons ? { icons: tool.icons } : {}),
       }, async (args) => remote.callTool({
         name: tool.name,
         arguments: args as Record<string, unknown>,
@@ -58,6 +69,7 @@ async function serve() {
         : "Upload a local file to the account library. Off until RONANA_MCP_UPLOAD_ROOT names a media folder.",
       inputSchema: z.object({ path: z.string() }),
       annotations: { readOnlyHint: false, destructiveHint: false },
+      ...(icons ? { icons } : {}),
     }, async ({ path }) => {
       try {
         const safePath = await resolveInsideRoot(path);
