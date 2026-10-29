@@ -17,7 +17,9 @@ const UPLOAD_ROOT = process.env.RONANA_MCP_UPLOAD_ROOT ? resolve(process.env.RON
 
 async function resolveInsideRoot(inputPath: string): Promise<string> {
   if (!UPLOAD_ROOT) throw new Error("Local uploads are off. Set RONANA_MCP_UPLOAD_ROOT to the folder that holds your media.");
-  const root = await realpath(UPLOAD_ROOT);
+  const root = await realpath(UPLOAD_ROOT).catch(() => {
+    throw new Error(`RONANA_MCP_UPLOAD_ROOT (${UPLOAD_ROOT}) does not exist.`);
+  });
   // A root that holds the home folder (the home folder itself, C:\Users, /home
   // or a drive root) would expose every file in it.
   const home = await realpath(homedir()).catch(() => homedir());
@@ -25,7 +27,9 @@ async function resolveInsideRoot(inputPath: string): Promise<string> {
   if (root === parse(root).root || homeFromRoot === "" || !(homeFromRoot.startsWith("..") || isAbsolute(homeFromRoot))) {
     throw new Error("RONANA_MCP_UPLOAD_ROOT must be a media folder, not a home folder, a folder that contains one, or a drive root.");
   }
-  const candidate = await realpath(isAbsolute(inputPath) ? inputPath : resolve(root, inputPath));
+  const candidate = await realpath(isAbsolute(inputPath) ? inputPath : resolve(root, inputPath)).catch(() => {
+    throw new Error(`No file at ${inputPath} in RONANA_MCP_UPLOAD_ROOT.`);
+  });
   const rel = relative(root, candidate);
   if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error("The path is outside RONANA_MCP_UPLOAD_ROOT.");
   return candidate;
