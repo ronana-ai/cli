@@ -55,7 +55,7 @@ export async function callTool<T = unknown>(remote: Remote, name: string, args: 
   const text = Array.isArray(response.content) ? response.content.map((c) => ("text" in c ? c.text : "")).join(" ") : "";
   // The SDK's own argument check answers in prose ("Input validation error:
   // Invalid arguments for tool x: limit: Invalid input"); keep only the field.
-  const invalid = /Invalid arguments for tool \S+: (\w+):/.exec(text);
+  const invalid = /Invalid arguments for tool \S+: ([\w.[\]-]+):/.exec(text);
   if (invalid) throw new ToolError({ code: "INVALID_REQUEST", message: `The value for "${invalid[1]}" is not valid.`, field: invalid[1] });
   throw new ToolError({ code: "TOOL_FAILED", message: text || `${name} failed.` });
 }

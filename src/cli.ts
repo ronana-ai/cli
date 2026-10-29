@@ -283,11 +283,12 @@ async function folderCommand(sub: string | undefined, args: Args) {
 }
 
 async function main() {
-  const [command, rawSub, ...rest] = process.argv.slice(2);
-  // `ronana generate --help`: a flag in the subcommand slot is a flag, not a subcommand.
-  const sub = rawSub?.startsWith("-") ? undefined : rawSub;
+  const [command, ...rest] = process.argv.slice(2);
   const takesSub = command === "auth" || command === "model" || command === "generate" || command === "folder";
-  const args = parseArgs((takesSub && sub !== undefined ? rest : [rawSub, ...rest]).filter((v): v is string => v !== undefined));
+  const args = parseArgs(rest);
+  // The subcommand is the first word that is not a flag, wherever the flags
+  // sit (`ronana generate --json list`, `ronana generate --help`).
+  const sub = takesSub ? args.positional.shift() : undefined;
   JSON_OUT = has(args, "json");
   if (!command || ["help", "--help", "-h"].includes(command) || has(args, "help")) return void process.stdout.write(HELP);
 
