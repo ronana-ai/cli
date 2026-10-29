@@ -82,10 +82,13 @@ export async function login(baseUrl = process.env.RONANA_BASE_URL ?? "https://ro
     const close = () => { clearTimeout(timer); server.close(); };
     const server = createServer((req, res) => {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
-      if (url.searchParams.get("state") !== state) {
-        res.writeHead(400).end("Invalid OAuth state.");
-        fail(new Error("OAuth state did not match."));
-      } else if (url.searchParams.get("error")) {
+      // Anything but our own callback (a favicon, a prefetch, a stale tab from an
+      // earlier sign-in) is ignored, so it cannot end the sign-in it isn't part of.
+      if (url.pathname !== "/callback" || url.searchParams.get("state") !== state) {
+        res.writeHead(404).end();
+        return;
+      }
+      if (url.searchParams.get("error")) {
         res.writeHead(400).end("Authorization was not completed.");
         fail(new Error(url.searchParams.get("error_description") ?? url.searchParams.get("error")!));
       } else {
