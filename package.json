@@ -1,0 +1,53 @@
+{
+  "name": "@ronana/mcp",
+  "version": "0.2.0",
+  "description": "Ronana command line and local MCP bridge.",
+  "license": "MIT",
+  "homepage": "https://ronana.ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ronana-ai/cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ronana-ai/cli/issues"
+  },
+  "keywords": [
+    "ronana",
+    "mcp",
+    "cli",
+    "image generation",
+    "video generation"
+  ],
+  "type": "module",
+  "bin": {
+    "ronana": "dist/cli.js",
+    "ronana-mcp": "dist/server.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build",
+    "start": "node --import tsx src/server.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "@napi-rs/keyring": "1.3.0",
+    "zod4": "npm:zod@4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^5",
+    "tsx": "^4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

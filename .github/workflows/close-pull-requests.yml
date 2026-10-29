@@ -1,0 +1,26 @@
+# This repository is published from Ronana's internal source, so a pull request
+# here can never be merged. Close each one with a pointer to Issues.
+#
+# pull_request_target runs with this repository's token, so it must never check
+# out or run the pull request's code. This job runs no code from the pull
+# request: it only calls the GitHub API.
+name: Close pull requests
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  close:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close with a note
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr close "$NUMBER" --comment "Thanks for taking the time. This repository is published from Ronana's internal source, so pull requests cannot be merged here. Please open an issue describing the change instead, and we will take it from there. For anything security related, see SECURITY.md."

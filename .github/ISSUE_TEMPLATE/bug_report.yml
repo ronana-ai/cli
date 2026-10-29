@@ -1,0 +1,27 @@
+name: Bug report
+description: Something does not work as described.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Command and output
+      description: The exact command and its full output. Remove anything private first.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `npm ls -g @ronana/mcp`, or the skill version you installed.
+  - type: input
+    id: system
+    attributes:
+      label: System
+      description: Operating system, Node.js version, and the AI app if one was involved.

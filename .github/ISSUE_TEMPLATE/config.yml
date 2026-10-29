@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/ronana-ai/cli/security/advisories/new
+    about: Report it privately, never in a public issue.
+  - name: Account, billing or credits
+    url: https://ronana.ai/support
+    about: Questions about your Ronana account go to support.
