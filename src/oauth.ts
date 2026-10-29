@@ -33,15 +33,19 @@ function writeCredentials(value: StoredCredentials) {
   entry().setPassword(JSON.stringify(value));
 }
 
+/** Ends a stored sign-in on the server, so it leaves the account's connections.
+ *  Best effort: an unreachable server still lets the local step go ahead. */
+async function revoke(credentials: StoredCredentials) {
+  await fetch(`${credentials.baseUrl}/api/auth/oauth2/revoke`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ token: credentials.refreshToken, client_id: credentials.clientId }),
+  }).catch(() => null);
+}
+
 export async function logout() {
   const current = readCredentials();
-  if (current) {
-    await fetch(`${current.baseUrl}/api/auth/oauth2/revoke`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ token: current.refreshToken, client_id: current.clientId }),
-    }).catch(() => null);
-  }
+  if (current) await revoke(current);
   try { entry().deletePassword(); } catch { /* No stored credential. */ }
 }
 
@@ -149,6 +153,9 @@ ${authorize}
       resource: `${baseUrl}/mcp`,
     });
     if (typeof tokens.access_token !== "string" || typeof tokens.refresh_token !== "string") throw new Error("OAuth response did not contain tokens.");
+    // Signing in again replaces the stored sign-in; end the old one too, or
+    // every login leaves another connection behind on the account.
+    const previous = readCredentials();
     writeCredentials({
       baseUrl,
       clientId: registered.client_id,
@@ -156,6 +163,7 @@ ${authorize}
       refreshToken: tokens.refresh_token,
       expiresAt: Date.now() + Number(tokens.expires_in ?? 900) * 1000,
     });
+    if (previous && previous.clientId !== registered.client_id) await revoke(previous);
   } finally {
     callback.close();
   }
