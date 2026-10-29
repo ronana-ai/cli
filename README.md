@@ -39,7 +39,6 @@ ronana generate create google/nano-banana-2-lite/edit --prompt "make it dusk" --
 ronana generate get <id> | wait <id> [--out dir]
 ronana generate list
 ronana upscale <id | file | url> --resolution 4k --out ./renders
-ronana improve google/nano-banana-2-lite/edit --prompt "make it dusk"
 ronana folder list | add <folder> <id…>
 ```
 
@@ -118,7 +117,6 @@ library.
 | `generate` | Start an image or video generation. |
 | `get_generation` | Get one generation and its download link. Pass `wait_seconds` (up to 45) to wait for the result in one call. |
 | `upscale` | Upscale a video to a higher resolution. |
-| `improve_prompt` | Rewrite a prompt so it works better on one model. |
 | `list_generations` | List recent generations. |
 | `list_references` | List library references. |
 | `upload_reference` | Add a file to the library from a URL (up to 25 MB) or from base64 (under 3 MB). |

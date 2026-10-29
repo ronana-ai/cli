@@ -14,7 +14,6 @@
 //   ronana generate get | wait <id> [--out dir]
 //   ronana generate list [--limit n]
 //   ronana upscale <id | file | https-url> [--resolution r] [--model m] [--wait] [--out dir]
-//   ronana improve <model> --prompt "…"
 //   ronana folder list | add <folder> <id…>
 
 import { randomUUID } from "node:crypto";
@@ -42,7 +41,6 @@ const HELP = `Usage: ronana <command>
   generate wait <id>            Wait for a generation to finish
   generate list                 Recent generations (--limit n)
   upscale <id|file|url>         Upscale a video (costs credits; --resolution, --model)
-  improve <model> --prompt "…"  Rewrite a prompt for a model (costs a little)
   folder list                   Your library folders
   folder add <folder> <id…>     File items into a folder (made if missing)
 
@@ -324,13 +322,6 @@ async function main() {
     }
     case "generate": return generateCommand(sub, args);
     case "upscale": return upscaleCommand(args);
-    case "improve": {
-      const model = args.positional[0];
-      const prompt = flag(args, "prompt");
-      if (!model || !prompt) throw new Error("Usage: ronana improve <model> --prompt \"…\"");
-      const improved = await withRemote((r) => callTool<{ prompt: string }>(r, "improve_prompt", { model, prompt }));
-      return emit(improved, () => print(improved.prompt));
-    }
     case "folder": case "folders": return folderCommand(command === "folders" ? "list" : sub, args);
     default: throw new Error(`Unknown command "${command}". Run \`ronana --help\`.`);
   }
