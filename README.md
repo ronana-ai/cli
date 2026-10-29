@@ -1,7 +1,6 @@
 # Ronana CLI and MCP
 
-NOTE: MCP and the command line are in admin preview. At launch they will
-require a paid plan.
+Requires a Ronana paid plan.
 
 WARNING: Generations spend your account credits.
 

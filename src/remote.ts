@@ -27,7 +27,7 @@ export async function remoteClient() {
       const advertised = await fetch(`${credentials.baseUrl}/.well-known/oauth-protected-resource/mcp`)
         .then((r) => r.ok, () => false);
       throw new Error(advertised
-        ? "This account does not have access to Ronana's CLI and MCP yet."
+        ? `Ronana's CLI and MCP need a paid plan: ${credentials.baseUrl}/pricing`
         : `No Ronana MCP endpoint at ${credentials.baseUrl}. Sign in again with the right --base-url.`);
     }
     throw error;
