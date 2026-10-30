@@ -7,7 +7,7 @@ import { readFile } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { Readable } from "node:stream";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { accessToken, readCredentials } from "./oauth.js";
+import { accessToken, readCredentials, SIGN_IN_ENDED } from "./oauth.js";
 
 export async function remoteClient() {
   const credentials = readCredentials();
@@ -20,6 +20,9 @@ export async function remoteClient() {
   try {
     await client.connect(transport);
   } catch (error) {
+    // A 401 on a token that was still in date: the server answers that for a
+    // connection disconnected on the website.
+    if (error instanceof Error && /\b401\b|unauthori[sz]ed|revoked/i.test(error.message)) throw new Error(SIGN_IN_ENDED);
     // A 404 means either an account outside the MCP rollout or a server with no
     // MCP at all (a wrong --base-url). Only a server that advertises the MCP
     // resource can be refusing the account.

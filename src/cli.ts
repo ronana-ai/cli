@@ -173,6 +173,15 @@ async function withRemote<T>(fn: (remote: Remote) => Promise<T>): Promise<T> {
   try { return await fn(remote); } finally { await remote.close().catch(() => null); }
 }
 
+/** A queued job: print its id, or with --wait / --out follow it to the end. */
+async function queuedThenFinish(remote: Remote, queued: { id: string }, args: Args) {
+  if (!has(args, "wait") && !has(args, "out")) {
+    return emit(queued, () => { print(queued.id); note(`Check it with \`ronana generate wait ${queued.id}\`.`); });
+  }
+  note(`Queued ${queued.id}.`);
+  await finish(await waitFor(remote, queued.id, args), args);
+}
+
 async function generateCommand(sub: string | undefined, args: Args) {
   const [target] = args.positional;
   if (sub === "list") {
@@ -205,11 +214,7 @@ async function generateCommand(sub: string | undefined, args: Args) {
        command run twice in ten minutes would return the first generation. */
     const idempotency_key = flag(args, "idempotency_key") ?? randomUUID();
     const queued = await callTool<{ id: string }>(remote, "generate", { model: contract.id, input, idempotency_key });
-    if (!has(args, "wait") && !has(args, "out")) {
-      return emit(queued, () => { print(queued.id); note(`Check it with \`ronana generate wait ${queued.id}\`.`); });
-    }
-    note(`Queued ${queued.id}.`);
-    await finish(await waitFor(remote, queued.id, args), args);
+    await queuedThenFinish(remote, queued, args);
   });
 }
 
@@ -255,11 +260,7 @@ async function upscaleCommand(args: Args) {
       ...(flag(args, "resolution") ? { resolution: flag(args, "resolution") } : {}),
       idempotency_key: flag(args, "idempotency_key") ?? randomUUID(),
     });
-    if (!has(args, "wait") && !has(args, "out")) {
-      return emit(queued, () => { print(queued.id); note(`Check it with \`ronana generate wait ${queued.id}\`.`); });
-    }
-    note(`Queued ${queued.id}.`);
-    await finish(await waitFor(remote, queued.id, args), args);
+    await queuedThenFinish(remote, queued, args);
   });
 }
 
@@ -301,8 +302,13 @@ async function main() {
       if (action === "logout") { await logout(); return print("Signed out."); }
       if (action === "status") {
         const credentials = readCredentials();
-        return emit({ signed_in: !!credentials, base_url: credentials?.baseUrl ?? null },
-          () => print(credentials ? `Signed in to ${credentials.baseUrl}.` : "Not signed in."));
+        if (!credentials) return emit({ signed_in: false, base_url: null }, () => print("Not signed in."));
+        // Ask the server: a sign-in stored here may have been disconnected on
+        // the website or have expired, and only the server knows.
+        const problem = await withRemote((r) => callTool(r, "get_account")).then(() => null, (error: unknown) =>
+          error instanceof ToolError ? null : error instanceof Error ? error.message : String(error));
+        return emit({ signed_in: problem === null, base_url: credentials.baseUrl, ...(problem ? { error: problem } : {}) },
+          () => print(problem ?? `Signed in to ${credentials.baseUrl}.`));
       }
       throw new Error("Use auth login | logout | status.");
     }

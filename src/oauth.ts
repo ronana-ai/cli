@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import { spawn } from "node:child_process";
 import { closeSync, openSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -78,34 +78,47 @@ export async function login(baseUrl = process.env.RONANA_BASE_URL ?? "https://ro
   const challenge = createHash("sha256").update(verifier).digest("base64url");
   const state = randomBytes(24).toString("base64url");
 
-  const callback = await new Promise<{ redirectUri: string; code: Promise<string>; close: () => void }>((resolve, reject) => {
+  const callback = await new Promise<{ redirectUri: string; code: Promise<string>; finish: (text: string) => void; close: () => void }>((resolve, reject) => {
     let settle!: (code: string) => void;
     let fail!: (error: Error) => void;
     const code = new Promise<string>((ok, no) => { settle = ok; fail = no; });
     const timer = setTimeout(() => fail(new Error("Sign-in timed out. Run `ronana auth login` again.")), LOGIN_TIMEOUT_MS);
-    const close = () => { clearTimeout(timer); server.close(); };
+    /* The browser tab waits on this response until the code has been traded
+       for tokens, so it only says "connected" once that is true. */
+    let held: ServerResponse | null = null;
+    let answered = false;
+    const finish = (text: string, status = 200) => {
+      if (!held) return;
+      held.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" }).end(text);
+      held = null;
+    };
+    const close = () => {
+      clearTimeout(timer);
+      finish("Sign-in did not finish. See your terminal for why.", 500);
+      server.close();
+    };
     const server = createServer((req, res) => {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       // Anything but our own callback (a favicon, a prefetch, a stale tab from an
-      // earlier sign-in) is ignored, so it cannot end the sign-in it isn't part of.
-      if (url.pathname !== "/callback" || url.searchParams.get("state") !== state) {
+      // earlier sign-in, a repeat) is ignored, so it cannot end the sign-in.
+      if (answered || url.pathname !== "/callback" || url.searchParams.get("state") !== state) {
         res.writeHead(404).end();
         return;
       }
+      answered = true;
       if (url.searchParams.get("error")) {
-        res.writeHead(400).end("Authorization was not completed.");
+        res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" }).end("Authorization was not completed.");
         fail(new Error(url.searchParams.get("error_description") ?? url.searchParams.get("error")!));
-      } else {
-        res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" }).end("Ronana is connected. You can close this window.");
-        settle(url.searchParams.get("code") ?? "");
+        return;
       }
-      close();
+      held = res;
+      settle(url.searchParams.get("code") ?? "");
     });
     server.once("error", (error) => { clearTimeout(timer); reject(error); });
     server.listen(0, "127.0.0.1", () => {
       const address = server.address();
       if (!address || typeof address === "string") { close(); return reject(new Error("Loopback callback failed.")); }
-      resolve({ redirectUri: `http://127.0.0.1:${address.port}/callback`, code, close });
+      resolve({ redirectUri: `http://127.0.0.1:${address.port}/callback`, code, finish, close });
     });
   });
   // Every exit below (refused registration, timeout, a refused token) frees the
@@ -163,7 +176,8 @@ ${authorize}
       refreshToken: tokens.refresh_token,
       expiresAt: Date.now() + Number(tokens.expires_in ?? 900) * 1000,
     });
-    if (previous && previous.clientId !== registered.client_id) await revoke(previous);
+    callback.finish("Ronana is connected. You can close this window.");
+    if (previous) await revoke(previous);
   } finally {
     callback.close();
   }
@@ -193,6 +207,9 @@ async function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
   try { return await fn(); } finally { if (held) try { unlinkSync(lock); } catch { /* Gone already. */ } }
 }
 
+/** What a user reads when the stored sign-in no longer works on the server. */
+export const SIGN_IN_ENDED = "Your Ronana sign-in has ended (disconnected or expired). Run `ronana auth login` again.";
+
 export async function accessToken(): Promise<string> {
   const stored = readCredentials();
   if (!stored) throw new Error("Not signed in. Run `ronana auth login` first.");
@@ -206,13 +223,18 @@ export async function accessToken(): Promise<string> {
       client_id: current.clientId,
       refresh_token: current.refreshToken,
       resource: `${current.baseUrl}/mcp`,
-    }).catch((error: unknown) => {
+    }).catch((error: unknown): Record<string, unknown> => {
       // A network failure (fetch's TypeError) may pass; a refusal means this
       // sign-in is over (disconnected on the website, or expired), and the
       // server's own words ("session not found") would read as something else.
       if (error instanceof TypeError) throw error;
-      throw new Error("Your Ronana sign-in has ended (disconnected or expired). Run `ronana auth login` again.");
+      // A login in another process replaces the stored sign-in and revokes the
+      // one we were refreshing: carry on with the new one instead.
+      const replaced = readCredentials();
+      if (replaced && replaced.clientId !== current.clientId && fresh(replaced)) return { replaced: replaced.accessToken };
+      throw new Error(SIGN_IN_ENDED);
     });
+    if (typeof tokens.replaced === "string") return tokens.replaced;
     if (typeof tokens.access_token !== "string") throw new Error("OAuth refresh failed.");
     const next = {
       ...current,
