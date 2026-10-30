@@ -206,6 +206,12 @@ export async function accessToken(): Promise<string> {
       client_id: current.clientId,
       refresh_token: current.refreshToken,
       resource: `${current.baseUrl}/mcp`,
+    }).catch((error: unknown) => {
+      // A network failure (fetch's TypeError) may pass; a refusal means this
+      // sign-in is over (disconnected on the website, or expired), and the
+      // server's own words ("session not found") would read as something else.
+      if (error instanceof TypeError) throw error;
+      throw new Error("Your Ronana sign-in has ended (disconnected or expired). Run `ronana auth login` again.");
     });
     if (typeof tokens.access_token !== "string") throw new Error("OAuth refresh failed.");
     const next = {
