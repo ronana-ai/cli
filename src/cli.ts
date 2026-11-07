@@ -15,6 +15,7 @@
 //   ronana generate list [--limit n]
 //   ronana upscale <id | file | https-url> [--resolution r] [--model m] [--wait] [--out dir]
 //   ronana folder list | add <folder> <id…>
+//   ronana listen [--with claude|codex|gemini|ollama|command] [--model m] [--command "…"]
 
 import { randomUUID } from "node:crypto";
 import { createWriteStream, existsSync, statSync } from "node:fs";
@@ -24,6 +25,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { login, logout, readCredentials } from "./oauth.js";
 import { callTool, remoteClient, ToolError, uploadFile } from "./remote.js";
+import { listen, runnerFor } from "./listen.js";
 import { buildInput, flag, has, isRemoteValue, parseArgs, replaceLocalMedia, typeOf, type Args, type JsonSchema, type ModelContract } from "./input.js";
 
 const HELP = `Usage: ronana <command>
@@ -43,6 +45,9 @@ const HELP = `Usage: ronana <command>
   upscale <id|file|url>         Upscale a video (costs credits; --resolution, --model)
   folder list                   Your library folders
   folder add <folder> <id…>     File items into a folder (made if missing)
+  listen                        Let the studio send Enhance and agent work to an AI
+                                on this computer (--with claude|codex|gemini|ollama|command,
+                                --model m, --command "…", --app "name"). No credits.
 
 Generate flags:
   --<field> <value>             Any field from \`model get\`. Repeat for lists.
@@ -329,6 +334,14 @@ async function main() {
     case "generate": return generateCommand(sub, args);
     case "upscale": return upscaleCommand(args);
     case "folder": case "folders": return folderCommand(command === "folders" ? "list" : sub, args);
+    case "listen": {
+      const runner = runnerFor(flag(args, "with") ?? "claude", { model: flag(args, "model"), command: flag(args, "command"), app: flag(args, "app") });
+      const remote = await remoteClient();
+      const stop = () => { void remote.close().catch(() => null).finally(() => process.exit(0)); };
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+      return listen(remote, runner, (line) => process.stderr.write(`${line}\n`));
+    }
     default: throw new Error(`Unknown command "${command}". Run \`ronana --help\`.`);
   }
 }

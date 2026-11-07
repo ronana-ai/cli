@@ -39,6 +39,7 @@ ronana generate get <id> | wait <id> [--out dir]
 ronana generate list
 ronana upscale <id | file | url> --resolution 4k --out ./renders
 ronana folder list | add <folder> <id…>
+ronana listen [--with claude|codex|gemini|ollama|command] [--model m]
 ```
 
 Every field from `model get` is a flag (`--aspect_ratio 16:9`, `--seed 7`).
@@ -52,6 +53,14 @@ the full list.
 `generate create` spends credits. Each run sends its own idempotency key, so
 the same command run twice makes two generations. Pass `--idempotency-key` to
 make a retry bill once.
+
+`listen` lets the Ronana studio send work to an AI on your computer. While it
+runs, the studio's assistant and agent list it under their model menu, and
+Enhance, assistant messages and agent turns go to it instead of Ronana's own
+models, so they cost no credits. Renders still do, and agent cards wait for
+your Confirm. `--with` picks the AI (Claude Code by default); `--with command
+--command "…"` runs any program that reads the prompt on stdin and prints its
+answer.
 
 ## Use Ronana from an AI app
 
@@ -112,6 +121,7 @@ library.
 | --- | --- |
 | `list_models` | List the available models. |
 | `get_model` | Get one model's contract: its input schema. |
+| `get_prompt_guide` | Get the guide for writing a prompt for one model. |
 | `estimate_cost` | Estimate the credit cost of a generation. Takes the same `model` and `input` as `generate`. |
 | `generate` | Start an image or video generation. |
 | `get_generation` | Get one generation and its download link. Pass `wait_seconds` (up to 45) to wait for the result in one call. |
@@ -124,6 +134,11 @@ library.
 | `list_folders` | List the folders in the library. |
 | `add_to_folder` | File library items into a folder. |
 | `get_account` | Get the plan and credit balance. |
+| `wait_for_requests` | Wait for Enhance, assistant and agent work from the studio. While an app calls it, the studio lists it as listening. |
+| `get_request` | Read one request the studio sent, by its id. |
+| `request_progress` | Tell the studio you are still working on a request you took, so a slow answer is not treated as abandoned. |
+| `agent_tool` | Look up models, prompt guides and prices for an agent request. |
+| `reply` | Answer a request: a prompt for the composer, a message, or cards for the board. |
 
 A generate call takes a `model` and an `input`, exactly as `get_model` shows it
 in `input_schema`. A media field takes a public https URL or a Ronana id
