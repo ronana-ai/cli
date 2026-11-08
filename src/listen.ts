@@ -29,7 +29,10 @@ export interface Runner { app: string; command: string; args: string[]; shell: b
    keeps conversations per folder). It starts over after a long quiet spell or
    many requests: every request carries a long model guide, so a conversation
    that grew forever would get slow and use more of the user's plan. */
-export interface SessionState { id: string; lastUsed: number; turns: number }
+/** `guides`: the models whose prompt guide this conversation has already
+ *  read. Each guide is long (tens of thousands of characters), so a request
+ *  for the same model in the same conversation leaves it out: much faster. */
+export interface SessionState { id: string; lastUsed: number; turns: number; guides?: string[] }
 export const SESSION_IDLE_MS = 6 * 60 * 60 * 1000;
 export const SESSION_MAX_TURNS = 8;
 
@@ -37,10 +40,10 @@ export const SESSION_MAX_TURNS = 8;
  *  `--session-id` starts one under a known id, `--resume` continues it. */
 export function nextSession(state: SessionState | null, now: number, newId: () => string): { state: SessionState; args: string[] } {
   if (state && now - state.lastUsed < SESSION_IDLE_MS && state.turns < SESSION_MAX_TURNS) {
-    return { state: { id: state.id, lastUsed: now, turns: state.turns + 1 }, args: ["--resume", state.id] };
+    return { state: { id: state.id, lastUsed: now, turns: state.turns + 1, guides: state.guides ?? [] }, args: ["--resume", state.id] };
   }
   const id = newId();
-  return { state: { id, lastUsed: now, turns: 1 }, args: ["--session-id", id] };
+  return { state: { id, lastUsed: now, turns: 1, guides: [] }, args: ["--session-id", id] };
 }
 
 /** Open the listener's ongoing conversation in Claude Desktop (Claude Code's
@@ -53,6 +56,14 @@ export function openConversation(dir: string): boolean {
   return true;
 }
 
+/** True when the next request continues a conversation that already read
+ *  this model's guide (nextSession decides continue vs start over). */
+export function guideKnown(runner: Runner, modelId: string, now = Date.now()): boolean {
+  if (!runner.session) return false;
+  const next = nextSession(readSession(runner.session), now, () => "");
+  return next.args[0] === "--resume" && (next.state.guides ?? []).includes(modelId);
+}
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function readSession(dir: string): SessionState | null {
@@ -60,7 +71,7 @@ export function readSession(dir: string): SessionState | null {
     const parsed = JSON.parse(readFileSync(join(dir, "session.json"), "utf8")) as Partial<SessionState>;
     // Only a real UUID: the id reaches a command line, through a shell on Windows.
     return typeof parsed.id === "string" && UUID.test(parsed.id) && typeof parsed.lastUsed === "number" && typeof parsed.turns === "number"
-      ? { id: parsed.id, lastUsed: parsed.lastUsed, turns: parsed.turns } : null;
+      ? { id: parsed.id, lastUsed: parsed.lastUsed, turns: parsed.turns, guides: Array.isArray(parsed.guides) ? parsed.guides.filter((g): g is string => typeof g === "string").slice(0, 50) : [] } : null;
   } catch { return null; }
 }
 
@@ -93,8 +104,27 @@ export function runnerFor(name: string, options: { model?: string; command?: str
   }
 }
 
-/** Run the AI once. Resolves with what it printed. */
-export function runOnce(runner: Runner, prompt: string, timeoutMs: number): Promise<string> {
+/** Claude Code's live mode: `stream-json` reports the reply as it is written
+ *  (text deltas), and a final `result` event carries the whole answer.
+ *  Verified against the real CLI. Only Claude Code has it; others print at
+ *  the end. */
+export const STREAM_ARGS = ["--output-format", "stream-json", "--verbose", "--include-partial-messages"];
+
+/** One stream-json line: the text it adds, whether it is thinking, or the
+ *  final answer. Anything else (system, tool, rate-limit events) is ignored. */
+export function readStreamLine(line: string): { text?: string; thinking?: boolean; result?: string } {
+  let event: { type?: string; result?: unknown; event?: { delta?: { type?: string; text?: unknown } } };
+  try { event = JSON.parse(line) as typeof event; } catch { return {}; }
+  if (event.type === "result") return typeof event.result === "string" ? { result: event.result } : {};
+  const delta = event.type === "stream_event" ? event.event?.delta : undefined;
+  if (delta?.type === "text_delta" && typeof delta.text === "string") return { text: delta.text };
+  if (delta?.type === "thinking_delta") return { thinking: true };
+  return {};
+}
+
+/** Run the AI once. Resolves with what it printed. With `live`, Claude Code's
+ *  reply is shown as it is written (the terminal listener). */
+export function runOnce(runner: Runner, prompt: string, timeoutMs: number, guideFor?: string, live?: (text: string) => void): Promise<string> {
   return new Promise((resolve, reject) => {
     if (runner.promptAsArg && prompt.length > MAX_ARG_PROMPT) {
       reject(new Error(`${runner.app} takes the request as one command-line argument, and this one is too long. Use --with command with a CLI that reads stdin.`));
@@ -105,7 +135,9 @@ export function runOnce(runner: Runner, prompt: string, timeoutMs: number): Prom
       mkdirSync(runner.session, { recursive: true });
       session = nextSession(readSession(runner.session), Date.now(), randomUUID);
     }
-    const base = session ? [...runner.args, ...session.args] : runner.args;
+    const streaming = !!live && runner.command === "claude";
+    const runnerArgs = streaming ? [...runner.args.filter((arg, i, all) => arg !== "--output-format" && all[i - 1] !== "--output-format"), ...STREAM_ARGS] : runner.args;
+    const base = session ? [...runnerArgs, ...session.args] : runnerArgs;
     const args = runner.promptAsArg ? [...base, prompt] : base;
     // windowsHide: the listener runs in the background (often started with
     // the computer), so a console window popping up per request looks like
@@ -118,7 +150,21 @@ export function runOnce(runner: Runner, prompt: string, timeoutMs: number): Prom
     let err = "";
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; child.kill(); reject(new Error(`${runner.app} took longer than ${Math.round(timeoutMs / 1000)}s.`)); }, timeoutMs);
-    child.stdout.on("data", (chunk: Buffer) => { out += chunk.toString("utf8"); });
+    let pending = "";
+    let thinkingShown = false;
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (!streaming) { out += chunk.toString("utf8"); return; }
+      pending += chunk.toString("utf8");
+      const lines = pending.split("\n");
+      pending = lines.pop() ?? "";
+      for (const line of lines) {
+        const step = readStreamLine(line);
+        if (step.thinking && !thinkingShown) { thinkingShown = true; live?.("(thinking…)\n"); }
+        if (step.text) { out += step.text; live?.(step.text); }
+        // The final answer replaces the pieces: it is the whole reply.
+        if (step.result !== undefined) out = step.result;
+      }
+    });
     child.stderr.on("data", (chunk: Buffer) => { err += chunk.toString("utf8"); });
     child.on("error", (error) => { clearTimeout(timer); reject(new Error(`Could not start ${runner.command}: ${error.message}`)); });
     child.on("close", (code) => {
@@ -126,7 +172,11 @@ export function runOnce(runner: Runner, prompt: string, timeoutMs: number): Prom
       if (code === 0) {
         // Saved only after a success: a failed first request must not leave
         // an id that `--resume` cannot find.
-        if (session && runner.session) { try { writeFileSync(join(runner.session, "session.json"), JSON.stringify(session.state)); } catch { /* next request starts over */ } }
+        if (session && runner.session) {
+          const guides = session.state.guides ?? [];
+          const state = guideFor && !guides.includes(guideFor) ? { ...session.state, guides: [...guides, guideFor] } : session.state;
+          try { writeFileSync(join(runner.session, "session.json"), JSON.stringify(state)); } catch { /* next request starts over */ }
+        }
         resolve(out);
       } else {
         // A conversation that can't be resumed (deleted, corrupted) starts
@@ -151,7 +201,11 @@ interface AgentRequest {
   references: { target: unknown; kind: string; label: string; duration_s?: number }[];
   context?: string; approval_mode: string; max_cards: number; card_schema: unknown;
 }
-export type StudioRequest = EnhanceRequest | AgentRequest;
+interface AssistantRequest {
+  id: string; kind: "assistant"; model: { id: string; name: string };
+  message: string; draft?: string; guide: string; max_chars: number;
+}
+export type StudioRequest = EnhanceRequest | AgentRequest | AssistantRequest;
 
 /** The prompt between <prompt> tags, or the whole answer when it has none. */
 export function extractPrompt(text: string): string {
@@ -173,16 +227,43 @@ export function extractJson(text: string): Record<string, unknown> | null {
   return null;
 }
 
-export function enhancePrompt(request: EnhanceRequest, refusal?: string): string {
+/** The guide, or a pointer to the one this conversation already read. */
+function guideLines(request: { model: { name: string }; guide: string }, known: boolean): string[] {
+  return known ? ["", `GUIDE: the same ${request.model.name} guide as earlier in this conversation.`] : ["", "GUIDE:", request.guide];
+}
+
+export function enhancePrompt(request: EnhanceRequest, refusal?: string, known = false): string {
   return [
     `Rewrite this draft into the best prompt for ${request.model.name}, following the guide.`,
     "Keep every reference token exactly as the draft writes it (@image1, @video1, @audio1).",
     `Answer with the final prompt only, between <prompt> and </prompt>, at most ${request.max_chars} characters.`,
-    "", "GUIDE:", request.guide,
+    ...guideLines(request, known),
     ...(request.brief ? ["", "BRIEF:", request.brief] : []),
     "", "DRAFT:", request.draft,
     ...(refusal ? ["", `Your last answer was refused: ${refusal}`, "Fix that and answer again."] : []),
   ].join("\n");
+}
+
+/** An assistant message: answer it like a chat reply, with a prompt for the
+ *  composer between <prompt> tags only when the answer has one. */
+export function assistantPrompt(request: AssistantRequest, refusal?: string, known = false): string {
+  return [
+    `The user is asking you in Ronana's assistant, about ${request.model.name}. Answer them directly and briefly, in plain words.`,
+    `If your answer includes a prompt for their composer, put that prompt alone between <prompt> and </prompt>, at most ${request.max_chars} characters, following the guide, and keep reference tokens exactly as written (@image1, @video1, @audio1). Otherwise write no tags.`,
+    ...guideLines(request, known),
+    ...(request.draft ? ["", "THEIR COMPOSER DRAFT:", request.draft] : []),
+    "", "THEIR MESSAGE:", request.message,
+    ...(refusal ? ["", `Your last answer was refused: ${refusal}`, "Fix that and answer again."] : []),
+  ].join("\n");
+}
+
+/** An assistant answer split into its message and, if tagged, its prompt. */
+export function splitAssistantAnswer(text: string): { message: string; prompt?: string } {
+  const tagged = /<prompt>([\s\S]*?)(?:<\/prompt>|$)/i.exec(text);
+  if (!tagged) return { message: text.trim() };
+  const prompt = tagged[1].trim();
+  const message = text.replace(tagged[0], "").trim();
+  return prompt ? { message, prompt } : { message };
 }
 
 export function agentPrompt(request: AgentRequest, catalog: string, refusal?: string): string {
@@ -202,6 +283,7 @@ export function agentPrompt(request: AgentRequest, catalog: string, refusal?: st
 }
 
 const ENHANCE_TIMEOUT_MS = 120_000;
+const ASSISTANT_TIMEOUT_MS = 120_000;
 /** The least time between two empty waits. */
 const IDLE_FLOOR_MS = 5_000;
 // Inside the board's own wait for an answer.
@@ -212,27 +294,36 @@ const AGENT_TIMEOUT_MS = 150_000;
  *  answer take its time. Best effort: a missed beat is not an error. */
 const PROGRESS_EVERY_MS = 15_000;
 
-async function answer(remote: Remote, runner: Runner, request: StudioRequest, log: (line: string) => void) {
+async function answer(remote: Remote, runner: Runner, request: StudioRequest, log: (line: string) => void, live?: (text: string) => void) {
   const beat = setInterval(() => { void callTool(remote, "request_progress", { id: request.id }).catch(() => {}); }, PROGRESS_EVERY_MS);
   try {
-    await answerOnce(remote, runner, request, log);
+    await answerOnce(remote, runner, request, log, live);
   } finally {
     clearInterval(beat);
   }
 }
 
-async function answerOnce(remote: Remote, runner: Runner, request: StudioRequest, log: (line: string) => void) {
+async function answerOnce(remote: Remote, runner: Runner, request: StudioRequest, log: (line: string) => void, live?: (text: string) => void) {
   let catalog = "";
   if (request.kind === "agent") {
     catalog = JSON.stringify(await callTool(remote, "agent_tool", { id: request.id, name: "list_models", input: {} }));
   }
   let refusal: string | undefined;
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const prompt = request.kind === "enhance" ? enhancePrompt(request, refusal) : agentPrompt(request, catalog, refusal);
-    const output = await runOnce(runner, prompt, request.kind === "enhance" ? ENHANCE_TIMEOUT_MS : AGENT_TIMEOUT_MS);
+    const guideModel = request.kind === "agent" ? undefined : request.model.id;
+    const known = guideModel ? guideKnown(runner, guideModel) : false;
+    const prompt = request.kind === "enhance" ? enhancePrompt(request, refusal, known)
+      : request.kind === "assistant" ? assistantPrompt(request, refusal, known)
+      : agentPrompt(request, catalog, refusal);
+    const timeout = request.kind === "enhance" ? ENHANCE_TIMEOUT_MS : request.kind === "assistant" ? ASSISTANT_TIMEOUT_MS : AGENT_TIMEOUT_MS;
+    const output = await runOnce(runner, prompt, timeout, guideModel, live);
+    // Only Claude Code streams; any other AI's answer is shown once it is done.
+    if (live) live(runner.command === "claude" ? "\n" : `${output.trim()}\n`);
     let args: Record<string, unknown>;
     if (request.kind === "enhance") {
       args = { id: request.id, prompt: extractPrompt(output) };
+    } else if (request.kind === "assistant") {
+      args = { id: request.id, ...splitAssistantAnswer(output) };
     } else {
       const json = extractJson(output);
       if (!json) { refusal = "it was not one JSON object."; continue; }
@@ -272,11 +363,22 @@ export async function connectWithRetry(log: (line: string) => void): Promise<Rem
 }
 
 /** Listen until Ctrl+C. */
-export async function listen(remote: Remote, runner: Runner, log: (line: string) => void): Promise<never> {
+/** What the user asked, as the terminal shows it before the reply. */
+export function requestSummary(request: StudioRequest): string {
+  const text = request.kind === "assistant" ? request.message
+    : request.kind === "enhance" ? `Enhance: ${request.draft}`
+    : request.messages.filter((m) => m.role === "user").at(-1)?.content ?? "";
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  return oneLine.length > 300 ? `${oneLine.slice(0, 300)}…` : oneLine;
+}
+
+/** Listen until Ctrl+C. `live` (the terminal listener) shows each request
+ *  and the reply as it is written; the background listener only logs. */
+export async function listen(remote: Remote, runner: Runner, log: (line: string) => void, live?: (text: string) => void): Promise<never> {
   // Name the account: a listener signed in to a different account than the
   // studio's listens fine and is never used, with nothing else to say why.
   const email = await callTool<{ email?: string }>(remote, "get_account").then((account) => account.email, () => undefined);
-  log(`Listening as ${runner.app}${email ? ` for ${email}` : ""}. Ronana's studio${email ? " on that account" : ""} now sends Enhance and agent requests here (Ctrl+C to stop).`);
+  log(`Listening as ${runner.app}${email ? ` for ${email}` : ""}. Ronana's studio${email ? " on that account" : ""} now sends Enhance, assistant and agent requests here (Ctrl+C to stop).`);
   let backoff = 0;
   for (;;) {
     try {
@@ -290,9 +392,10 @@ export async function listen(remote: Remote, runner: Runner, log: (line: string)
         continue;
       }
       const started = Date.now();
-      log(`● ${request.kind} ${request.id}${request.kind === "enhance" ? ` · ${request.model.name}` : ""}`);
+      log(`● ${request.kind} ${request.id}${request.kind === "agent" ? "" : ` · ${request.model.name}`}`);
       try {
-        await answer(remote, runner, request, log);
+        if (live) live(`  You: ${requestSummary(request)}\n  ${runner.app}: `);
+        await answer(remote, runner, request, log, live);
         log(`✓ sent · ${((Date.now() - started) / 1000).toFixed(1)}s`);
       } catch (error) {
         log(`✗ ${error instanceof Error ? error.message : String(error)}`);

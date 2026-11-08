@@ -72,7 +72,10 @@ With Claude Code, the listener answers every request inside one ongoing
 conversation, so it remembers your earlier prompts. It starts a new one after a
 few hours of quiet or a handful of requests. `ronana chat` opens that
 conversation in Claude Desktop so you can read it (Claude Code 2.1.285 or
-later). Nothing opens a window while it works. Install the CLI globally first
+later). Nothing opens a window while it works.
+
+Run `listen` in a terminal (without `--on-startup`) to watch it work: each
+request shows what you asked, and Claude Code's reply appears as it writes it. Install the CLI globally first
 (`npm i -g @ronana/mcp`), since startup needs a lasting copy to run.
 
 ## Use Ronana from an AI app

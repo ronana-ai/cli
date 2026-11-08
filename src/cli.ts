@@ -372,7 +372,8 @@ async function main() {
         const stop = () => { void remote.close().catch(() => null).finally(() => process.exit(0)); };
         process.once("SIGINT", stop);
         process.once("SIGTERM", stop);
-        return await listen(remote, runner, log);
+        // In a terminal, show each request and the reply as it is written.
+        return await listen(remote, runner, log, background ? undefined : (text) => { process.stdout.write(text); });
       } catch (error) {
         if (!background || !isFatal(error)) throw error;
         log(`Stopped: ${error instanceof Error ? error.message : String(error)}`);
