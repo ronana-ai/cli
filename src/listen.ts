@@ -12,9 +12,17 @@ import { callTool, ToolError, type remoteClient } from "./remote.js";
 
 type Remote = Awaited<ReturnType<typeof remoteClient>>;
 
-export interface Runner { app: string; command: string; args: string[]; shell: boolean }
+/** How the prompt reaches the AI: on stdin (most CLIs), or as the last
+ *  argument for one that only takes it there (Grok Build's `-p <prompt>`). An
+ *  argument prompt is never passed through a shell: the draft is the user's
+ *  text, and a shell would run anything in it. */
+export interface Runner { app: string; command: string; args: string[]; shell: boolean; promptAsArg?: boolean }
 
-/** The AIs `--with` knows. Each reads the prompt on stdin and prints its answer. */
+/** The longest prompt sent as an argument. Windows caps a whole command line
+ *  near 32k characters; past this the runner refuses instead of truncating. */
+export const MAX_ARG_PROMPT = 24_000;
+
+/** The AIs `--with` knows. Each reads the prompt (stdin, or one argument) and prints its answer. */
 export function runnerFor(name: string, options: { model?: string; command?: string; app?: string }): Runner {
   const shell = process.platform === "win32";
   const app = options.app?.trim();
@@ -22,20 +30,29 @@ export function runnerFor(name: string, options: { model?: string; command?: str
     case "claude": return { app: app || "Claude Code", command: "claude", args: ["-p", "--output-format", "text", ...(options.model ? ["--model", options.model] : [])], shell };
     case "codex": return { app: app || "Codex", command: "codex", args: ["exec", ...(options.model ? ["-m", options.model] : []), "-"], shell };
     case "gemini": return { app: app || "Gemini CLI", command: "gemini", args: options.model ? ["-m", options.model] : [], shell };
+    // Cursor's CLI: print mode answers once and exits; piped stdin is the prompt.
+    case "cursor": return { app: app || "Cursor", command: "cursor-agent", args: ["-p", "--output-format", "text", ...(options.model ? ["--model", options.model] : [])], shell };
+    // xAI's Grok Build CLI: `grok -p <prompt>` answers once and exits.
+    case "grok": return { app: app || "Grok", command: "grok", args: [...(options.model ? ["--model", options.model] : []), "-p"], shell: false, promptAsArg: true };
     case "ollama":
       if (!options.model) throw new Error("--with ollama needs --model <name>, e.g. --model llama3.1.");
       return { app: app || `Ollama ${options.model}`, command: "ollama", args: ["run", options.model], shell };
     case "command":
       if (!options.command?.trim()) throw new Error("--with command needs --command \"<your command>\"; it gets the prompt on stdin.");
       return { app: app || "Desktop AI", command: options.command, args: [], shell: true };
-    default: throw new Error(`Unknown --with "${name}". Use claude, codex, gemini, ollama or command.`);
+    default: throw new Error(`Unknown --with "${name}". Use claude, codex, cursor, gemini, grok, ollama or command.`);
   }
 }
 
 /** Run the AI once. Resolves with what it printed. */
 export function runOnce(runner: Runner, prompt: string, timeoutMs: number): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(runner.command, runner.args, { shell: runner.shell, stdio: ["pipe", "pipe", "pipe"] });
+    if (runner.promptAsArg && prompt.length > MAX_ARG_PROMPT) {
+      reject(new Error(`${runner.app} takes the request as one command-line argument, and this one is too long. Use --with command with a CLI that reads stdin.`));
+      return;
+    }
+    const args = runner.promptAsArg ? [...runner.args, prompt] : runner.args;
+    const child = spawn(runner.command, args, { shell: runner.promptAsArg ? false : runner.shell, stdio: ["pipe", "pipe", "pipe"] });
     let out = "";
     let err = "";
     const timer = setTimeout(() => { child.kill(); reject(new Error(`${runner.app} took longer than ${Math.round(timeoutMs / 1000)}s.`)); }, timeoutMs);
@@ -47,7 +64,7 @@ export function runOnce(runner: Runner, prompt: string, timeoutMs: number): Prom
       if (code === 0) resolve(out);
       else reject(new Error(`${runner.app} exited with code ${code}${err.trim() ? `: ${err.trim().split("\n").slice(-3).join(" ")}` : ""}`));
     });
-    child.stdin.end(prompt);
+    child.stdin.end(runner.promptAsArg ? "" : prompt);
   });
 }
 

@@ -39,7 +39,7 @@ ronana generate get <id> | wait <id> [--out dir]
 ronana generate list
 ronana upscale <id | file | url> --resolution 4k --out ./renders
 ronana folder list | add <folder> <id…>
-ronana listen [--with claude|codex|gemini|ollama|command] [--model m]
+ronana listen [--with claude|codex|cursor|gemini|grok|ollama|command] [--model m]
 ```
 
 Every field from `model get` is a flag (`--aspect_ratio 16:9`, `--seed 7`).
@@ -58,9 +58,9 @@ make a retry bill once.
 runs, the studio's assistant and agent list it under their model menu, and
 Enhance, assistant messages and agent turns go to it instead of Ronana's own
 models, so they cost no credits. Renders still do, and agent cards wait for
-your Confirm. `--with` picks the AI (Claude Code by default); `--with command
---command "…"` runs any program that reads the prompt on stdin and prints its
-answer.
+your Confirm. `--with` picks the AI (Claude Code by default; also Codex, Cursor, Gemini CLI,
+Grok Build and Ollama); `--with command --command "…"` runs any program that
+reads the prompt on stdin and prints its answer.
 
 ## Use Ronana from an AI app
 

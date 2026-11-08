@@ -15,7 +15,7 @@
 //   ronana generate list [--limit n]
 //   ronana upscale <id | file | https-url> [--resolution r] [--model m] [--wait] [--out dir]
 //   ronana folder list | add <folder> <id…>
-//   ronana listen [--with claude|codex|gemini|ollama|command] [--model m] [--command "…"]
+//   ronana listen [--with claude|codex|cursor|gemini|grok|ollama|command] [--model m] [--command "…"]
 
 import { randomUUID } from "node:crypto";
 import { createWriteStream, existsSync, statSync } from "node:fs";
@@ -46,7 +46,7 @@ const HELP = `Usage: ronana <command>
   folder list                   Your library folders
   folder add <folder> <id…>     File items into a folder (made if missing)
   listen                        Let the studio send Enhance and agent work to an AI
-                                on this computer (--with claude|codex|gemini|ollama|command,
+                                on this computer (--with claude|codex|cursor|gemini|grok|ollama|command,
                                 --model m, --command "…", --app "name"). No credits.
 
 Generate flags:
