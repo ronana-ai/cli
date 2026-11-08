@@ -7,11 +7,11 @@ import { readFile } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { Readable } from "node:stream";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { accessToken, readCredentials, SIGN_IN_ENDED } from "./oauth.js";
+import { accessToken, NOT_SIGNED_IN, readCredentials, SIGN_IN_ENDED } from "./oauth.js";
 
 export async function remoteClient() {
   const credentials = readCredentials();
-  if (!credentials) throw new Error("Not signed in. Run `ronana auth login` first.");
+  if (!credentials) throw new Error(NOT_SIGNED_IN);
   const client = new Client({ name: "ronana-local", version: "1.0.0" });
   const transport = new StreamableHTTPClientTransport(new URL(`${credentials.baseUrl}/mcp`), {
     authProvider: { token: accessToken },
@@ -46,7 +46,7 @@ export class ToolError extends Error {
   }
 }
 
-type Remote = Awaited<ReturnType<typeof remoteClient>>;
+export type Remote = Awaited<ReturnType<typeof remoteClient>>;
 
 /** Call one tool and unwrap the `{ ok, data | error }` envelope every Ronana
  *  tool answers with. */

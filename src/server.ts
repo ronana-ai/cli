@@ -91,17 +91,17 @@ async function main() {
   const command = process.argv[2] ?? "serve";
   if (command === "login") {
     await login();
-    process.stdout.write("Connected.\n");
+    process.stdout.write("Signed in.\n");
     return;
   }
   if (command === "logout") {
     await logout();
-    process.stdout.write("Disconnected.\n");
+    process.stdout.write("Signed out.\n");
     return;
   }
   if (command === "status") {
     const credentials = readCredentials();
-    process.stdout.write(credentials ? `Connected to ${credentials.baseUrl}.\n` : "Not connected.\n");
+    process.stdout.write(credentials ? `Signed in to ${credentials.baseUrl}.\n` : "Not signed in.\n");
     return;
   }
   if (command === "serve") {

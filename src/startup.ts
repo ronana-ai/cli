@@ -11,34 +11,29 @@
 // `--off-startup` removes the entry and stops the running listener.
 
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
+import { runningListener, stopListener } from "./lock.js";
+import { stateDir } from "./paths.js";
 
-export const STARTUP_NAME = "ronana-listen";
+const STARTUP_NAME = "ronana-listen";
 const MAC_LABEL = "ai.ronana.listen";
 const WIN_VALUE = "RonanaListen";
 const WIN_RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 /** The log is moved aside past this size, so a listener left on for months stays small. */
 const LOG_MAX_BYTES = 1_000_000;
 
-export type Platform = "win32" | "darwin" | "linux";
-
 /** What the startup entry runs: node, this CLI, and the listen arguments. */
 export interface StartupSpec { node: string; script: string; args: string[]; path: string }
 
 /** The CLI arguments to register, from the user's own after `listen`: the
- *  same command minus the startup flags, plus `--background`. */
+ *  same command minus the startup flags (any spelling: `--on-startup`,
+ *  `--on_startup=true`), plus `--background`. */
 export function startupArgs(argv: string[]): string[] {
-  const drop = new Set(["--on-startup", "--off-startup", "--background"]);
-  return ["listen", ...argv.filter((arg) => !drop.has(arg)), "--background"];
-}
-
-/** Where the background listener keeps its log and process id. */
-export function stateDir(platform: Platform = process.platform as Platform, env: Record<string, string | undefined> = process.env, home = homedir()): string {
-  if (platform === "win32") return join(env.LOCALAPPDATA || join(home, "AppData", "Local"), "ronana");
-  if (platform === "darwin") return join(home, "Library", "Logs", "ronana");
-  return join(env.XDG_STATE_HOME || join(home, ".local", "state"), "ronana");
+  const drop = new Set(["on_startup", "off_startup", "background"]);
+  const name = (arg: string) => arg.startsWith("--") ? arg.slice(2).split("=", 1)[0]!.replaceAll("-", "_") : "";
+  return ["listen", ...argv.filter((arg) => !drop.has(name(arg))), "--background"];
 }
 
 const xml = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -115,8 +110,7 @@ export function windowsRunCommand(spec: StartupSpec): string {
 
 function plistPath() { return join(homedir(), "Library", "LaunchAgents", `${MAC_LABEL}.plist`); }
 function unitPath() { return join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "systemd", "user", `${STARTUP_NAME}.service`); }
-function pidPath() { return join(stateDir(), "listen.pid"); }
-export function logPath() { return join(stateDir(), "listen.log"); }
+function logPath() { return join(stateDir(), "listen.log"); }
 
 const run = (command: string, args: string[]) => execFileSync(command, args, { stdio: "ignore" });
 const tryRun = (command: string, args: string[]) => { try { run(command, args); return true; } catch { return false; } };
@@ -131,60 +125,6 @@ function currentSpec(argv: string[]): StartupSpec {
   if (/[\\/]_npx[\\/]/.test(script) || /\.ts$/.test(script)) throw new Error("Install the CLI first so startup has a lasting copy to run: npm i -g @ronana/mcp");
   return { node: process.execPath, script, args: startupArgs(argv), path: process.env.PATH ?? "" };
 }
-
-/* ── one listener per computer ──────────────────────────────────────────
-   Every listener on a computer signs in as the same app, so the server can't
-   tell two apart: they take turns grabbing requests, and an old one left
-   running (a terminal from last week, an older version) answers some of them
-   badly. So the listener keeps a lock in its state folder: the running one's
-   process id and whether it runs in the background. */
-export interface ListenerLock { pid: number; background: boolean }
-
-/** The lock file as written: JSON, or a bare pid from versions before 0.4.5
- *  (those were always the background listener). */
-export function parseLock(text: string): ListenerLock | null {
-  const trimmed = text.trim();
-  if (/^\d+$/.test(trimmed)) return { pid: Number(trimmed), background: true };
-  try {
-    const value = JSON.parse(trimmed) as Partial<ListenerLock>;
-    return Number.isInteger(value.pid) && (value.pid as number) > 0 ? { pid: value.pid as number, background: value.background === true } : null;
-  } catch { return null; }
-}
-
-/** Is that process still running, and still node (never an unrelated program
- *  that reused the number, which Windows does readily)? */
-function alive(pid: number): boolean {
-  try { process.kill(pid, 0); } catch { return false; }
-  if (process.platform !== "win32") return true;
-  try {
-    const row = execFileSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8", windowsHide: true });
-    return row.toLowerCase().includes(`"${basename(process.execPath).toLowerCase()}"`);
-  } catch { return false; }
-}
-
-/** The listener already running on this computer, other than this process. */
-export function runningListener(): ListenerLock | null {
-  let lock: ListenerLock | null = null;
-  try { lock = parseLock(readFileSync(pidPath(), "utf8")); } catch { return null; }
-  return lock && lock.pid !== process.pid && alive(lock.pid) ? lock : null;
-}
-
-/** Stop a running listener (it was checked alive and node just before). */
-export function stopListener(lock: ListenerLock): void {
-  try { process.kill(lock.pid); } catch { /* already gone */ }
-  try { unlinkSync(pidPath()); } catch { /* already gone */ }
-}
-
-/** Hold the lock for this process, and let it go on exit. A process killed
- *  outright leaves its lock behind; the next listener sees it is not running. */
-export function claimListener(background: boolean): void {
-  mkdirSync(stateDir(), { recursive: true });
-  writeFileSync(pidPath(), JSON.stringify({ pid: process.pid, background } satisfies ListenerLock));
-  process.once("exit", () => {
-    try { if (parseLock(readFileSync(pidPath(), "utf8"))?.pid === process.pid) unlinkSync(pidPath()); } catch { /* already gone */ }
-  });
-}
-
 
 export function installStartup(argv: string[]): string {
   const spec = currentSpec(argv);

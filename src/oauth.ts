@@ -209,14 +209,16 @@ async function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
 
 /** What a user reads when the stored sign-in no longer works on the server. */
 export const SIGN_IN_ENDED = "Your Ronana sign-in has ended (disconnected or expired). Run `ronana auth login` again.";
+/** What a user reads when nothing is signed in on this computer. */
+export const NOT_SIGNED_IN = "Not signed in. Run `ronana auth login` first.";
 
 export async function accessToken(): Promise<string> {
   const stored = readCredentials();
-  if (!stored) throw new Error("Not signed in. Run `ronana auth login` first.");
+  if (!stored) throw new Error(NOT_SIGNED_IN);
   if (fresh(stored)) return stored.accessToken;
   return withRefreshLock(async () => {
     const current = readCredentials();
-    if (!current) throw new Error("Not signed in. Run `ronana auth login` first.");
+    if (!current) throw new Error(NOT_SIGNED_IN);
     if (fresh(current)) return current.accessToken; // Another process refreshed.
     const tokens = await tokenRequest(current.baseUrl, {
       grant_type: "refresh_token",

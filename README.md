@@ -39,6 +39,8 @@ ronana generate get <id> | wait <id> [--out dir]
 ronana generate list
 ronana upscale <id | file | url> --resolution 4k --out ./renders
 ronana folder list | add <folder> <id…>
+ronana next [--app "name"]
+ronana reply <id> --file <reply.json | ->
 ronana listen [--with claude|codex|cursor|gemini|grok|ollama|command] [--model m] [--on-startup | --off-startup]
 ```
 
@@ -54,36 +56,39 @@ the full list.
 the same command run twice makes two generations. Pass `--idempotency-key` to
 make a retry bill once.
 
-`listen` lets the Ronana studio send work to an AI on your computer. While it
-runs, the studio's assistant and agent list it under their model menu, and
-Enhance, assistant messages and agent turns go to it instead of Ronana's own
-models, so they cost no credits. Renders still do, and agent cards wait for
-your Confirm. `--with` picks the AI (Claude Code by default; also Codex, Cursor, Gemini CLI,
-Grok Build and Ollama); `--with command --command "…"` runs any program that
-reads the prompt on stdin and prints its answer.
+### Answer the studio with your own AI
+
+The Ronana studio can send its Enhance, assistant messages and agent turns to
+your own AI instead of Ronana's models, so they cost no credits. Renders still
+do, and agent cards wait for your Confirm.
 
 Best of all, let a chat answer the studio itself, so you see every request and
 reply right in the conversation: in Claude Code (including the Code tab in
 Claude Desktop), Codex or Cursor, the chat runs `ronana next --app "Claude Code"`
-as a background task. It waits for one request, prints it with exactly how to
-answer, and exits; the chat answers it, sends it with `ronana reply <id> --file
-<reply.json>`, and starts `ronana next` again. It works while that chat is open.
-The studio's Autoreply sets this up for you.
+as a background task. It waits for one request, saves its files, prints it with
+exactly how to answer, and exits; the chat answers it, sends it with `ronana
+reply <id> --file <reply.json>`, and starts `ronana next` again. It works while
+that chat is open. The studio's Autoreply sets this up for you.
 
-Or let a desktop AI start the listener for you: in Claude
-Code (including the Code tab in Claude Desktop), Codex or Cursor, ask it to run
-`ronana listen --with claude` (or `codex` / `cursor`) as a background task. You
-see it working in that app, and it stops when you close the app. You can also
-run it in a terminal and leave the window open: each request shows what you
-asked, and Claude Code's reply appears as it writes it.
+Each request leaves temporary files the chat reads: the images, videos and
+audio you attached (downloaded), the model's prompt guide, and your assistant
+project if one is picked. The guide and project are one file per model and
+version, so a chat reads each once. They are removed a day later.
+
+`listen` answers from a terminal instead: it runs an AI on your computer once
+per request and shows what you asked and the reply as it is written. `--with`
+picks the AI (Claude Code by default; also Codex, Cursor, Gemini CLI, Grok
+Build and Ollama); `--with command --command "…"` runs any program that reads
+the prompt on stdin and prints its answer.
 
 With Claude Code, the listener answers every request inside one ongoing
 conversation, so it remembers your earlier prompts. It starts a new one after a
 few hours of quiet or a handful of requests. `ronana chat` opens that
 conversation in Claude Desktop (Claude Code 2.1.285 or later).
 
-One listener runs per computer: starting a new one stops the one already
-running, so a forgotten window never answers in its place.
+One listener runs per computer (`next` included): starting a new one stops the
+one already running, so a forgotten window never answers in its place. A
+listener started with your computer steps aside while a chat listens.
 
 Optional: `--on-startup` keeps a listener running in the background whenever
 you are signed in to your computer, and `ronana listen --off-startup` removes

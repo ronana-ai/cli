@@ -4,7 +4,7 @@
 //
 //   1. the chat starts `ronana next` as a background task
 //   2. it waits for one studio request (the studio shows the app as listening),
-//      takes it, saves it to files, prints what to do, and exits
+//      takes it, saves its files, prints what to do, and exits
 //   3. the app wakes the chat, which answers in the chat itself and sends it
 //      with `ronana reply`, then starts `ronana next` again
 //
@@ -13,61 +13,37 @@
 // the chat does, with its own memory, in front of the user.
 
 import { spawn } from "node:child_process";
-import { mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { isFatal } from "./listen.js";
-import { callTool, ToolError, type remoteClient } from "./remote.js";
+import { callTool, ToolError, type Remote } from "./remote.js";
+import {
+  lastUserMessage, ListenerStopped, referenceLines, REPLY_SHAPE, saveRequestFiles, waitForRequest,
+  type ListenerSession, type RequestFiles, type StudioRequest,
+} from "./requests.js";
 
-type Remote = Awaited<ReturnType<typeof remoteClient>>;
-
-/** A request as the server describes it; only the fields this prints. */
-export interface NextRequest {
-  id: string;
-  kind: "enhance" | "assistant" | "agent";
-  model?: { id: string; name: string };
-  message?: string;
-  draft?: string;
-  brief?: string;
-  guide?: string;
-  max_chars?: number;
-  instructions?: string;
-  messages?: { role: string; content: string }[];
-  max_cards?: number;
-}
-
-const IDLE_FLOOR_MS = 5_000;
 const BEAT_MS = 15_000;
 /** The helper gives up with the request's own expiry. */
 const BEAT_FOR_MS = 10 * 60 * 1000;
-/** Request files older than this are swept on the next run. */
-const KEEP_FILES_MS = 24 * 60 * 60 * 1000;
-
-const safeName = (value: string) => value.replace(/[^\w.-]+/g, "_").slice(0, 120);
-
-/** What the reply JSON holds for each kind of request. */
-export const REPLY_SHAPE: Record<NextRequest["kind"], string> = {
-  enhance: '{"prompt": "the rewritten prompt"}',
-  assistant: '{"message": "your answer", "prompt": "a prompt for their composer, only if your answer has one"}',
-  agent: '{"message": "what the user reads on their board", "cards": [ ...cards following card_schema in the request file ]}',
-};
 
 /** The block the chat reads when `ronana next` ends: what was asked, where
- *  the full request and the model's guide are, and exactly how to answer. */
-export function describeNext(request: NextRequest, files: { request: string; guide?: string }, app: string): string {
+ *  its files are, and exactly how to answer. */
+export function describeNext(request: StudioRequest, files: RequestFiles, app: string): string {
   const lines = [
-    `RONANA STUDIO REQUEST ${request.id} (${request.kind}${request.model ? ` · ${request.model.name}` : ""})`,
+    `RONANA STUDIO REQUEST ${request.id} (${request.kind}${"model" in request ? ` · ${request.model.name}` : ""})`,
   ];
-  if (request.kind === "assistant") lines.push(`Their message: ${request.message ?? ""}`);
-  if (request.kind === "agent") lines.push(`Their message: ${request.messages?.filter((m) => m.role === "user").at(-1)?.content ?? ""}`);
-  if (request.draft) lines.push(`Their composer draft: ${request.draft}`);
-  if (request.brief) lines.push(`Brief: ${request.brief}`);
+  if (request.kind === "assistant") lines.push(`Their message: ${request.message}`);
+  if (request.kind === "agent") lines.push(`Their message: ${lastUserMessage(request)}`);
+  if ("draft" in request && request.draft) lines.push(`Their composer draft: ${request.draft}`);
+  if (request.kind === "enhance" && request.brief) lines.push(`Brief: ${request.brief}`);
   if (request.instructions) lines.push(`What to do: ${request.instructions}`);
-  if (files.guide && request.model) {
+  if (files.guide && "model" in request) {
     lines.push(`Prompt guide for ${request.model.name}: ${files.guide} (read it before you write a prompt for this model, unless you already read it earlier in this chat).`);
   }
-  if (request.max_chars) lines.push(`A prompt is at most ${request.max_chars} characters. Keep reference tokens exactly as written (@image1, @video1, @audio1).`);
+  if (files.project && "project" in request && request.project) {
+    lines.push(`Their project "${request.project.label}": ${files.project} (their own instructions; read it unless you already read this file earlier in this chat. Use the guide, the project, or both, as fits).`);
+  }
+  if (files.references.length) lines.push("Attached (open the files to see them):", ...referenceLines(files.references));
+  if ("max_chars" in request) lines.push(`A prompt is at most ${request.max_chars} characters. Keep reference tokens exactly as written (@image1, @video1, @audio1).`);
   if (request.kind === "agent") {
-    lines.push(`At most ${request.max_cards ?? 1} cards. Model lookups: \`ronana agent-tool ${request.id} list_models\` (the request file lists the other tools and the card schema).`);
+    lines.push(`At most ${request.max_cards} cards. Model lookups: \`ronana agent-tool ${request.id} list_models\` (the request file lists the other tools and the card schema).`);
   }
   lines.push(
     `Full request: ${files.request}`,
@@ -81,57 +57,42 @@ export function describeNext(request: NextRequest, files: { request: string; gui
   return lines.join("\n");
 }
 
-/** Save the request (and, separately, its long guide) for the chat to read. */
-function saveRequest(dir: string, request: NextRequest, extra: Record<string, unknown>): { request: string; guide?: string } {
-  mkdirSync(dir, { recursive: true });
-  // Sweep yesterday's files: each request leaves two behind.
-  try {
-    for (const name of readdirSync(dir)) {
-      const path = join(dir, name);
-      if (Date.now() - statSync(path).mtimeMs > KEEP_FILES_MS) unlinkSync(path);
-    }
-  } catch { /* nothing to sweep */ }
-  const { guide, ...rest } = request;
-  const files: { request: string; guide?: string } = { request: join(dir, `${safeName(request.id)}.json`) };
-  if (guide && request.model) {
-    files.guide = join(dir, `guide-${safeName(request.model.id)}.md`);
-    writeFileSync(files.guide, guide);
-  }
-  writeFileSync(files.request, JSON.stringify({ ...rest, ...extra }, null, 2));
-  return files;
+/** What the chat reads when the server stopped its loop. It must tell the user
+ *  and NOT start `ronana next` again: a restart would take over from whatever
+ *  replaced it, or keep a loop nobody uses alive. */
+export function describeStop(stop: ListenerStopped, app: string): string {
+  const why = stop.reason === "idle"
+    ? "Listening for the Ronana studio stopped: no requests came in for 15 minutes."
+    : "Listening for the Ronana studio stopped: another app or computer started listening for this account, and only one listens at a time.";
+  return [
+    `RONANA STUDIO: ${why}`,
+    "Tell the user that in one short line, and do NOT run `ronana next` again unless they ask.",
+    `To listen again later, run this as a background task: ronana next --app "${app}"`,
+  ].join("\n");
 }
 
-/** Wait for one request, take it, start the "still working" helper, save
- *  it and return what to print. */
-export async function nextRequest(remote: Remote, app: string, dir: string, startHeartbeat: (id: string) => void): Promise<string> {
-  let backoff = 0;
-  for (;;) {
-    const asked = Date.now();
-    let request: NextRequest | null;
-    try {
-      ({ request } = await callTool<{ request: NextRequest | null }>(remote, "wait_for_requests", { app }));
-      backoff = 0;
-    } catch (error) {
-      // An ended sign-in or a missing plan won't fix itself; a dropped
-      // connection will: wait and ask again, as `ronana listen` does.
-      if (isFatal(error)) throw error;
-      backoff = Math.min(30_000, backoff ? backoff * 2 : 2_000);
-      await new Promise((resolve) => setTimeout(resolve, backoff));
-      continue;
-    }
-    if (!request) {
-      // The server answers at once (not after holding) when its budget of
-      // held calls is spent: pause instead of asking again in a tight loop.
-      if (Date.now() - asked < IDLE_FLOOR_MS) await new Promise((resolve) => setTimeout(resolve, IDLE_FLOOR_MS));
-      continue;
-    }
-    // Before anything slow: the studio drops a request nobody reports on.
-    startHeartbeat(request.id);
+/** Wait for one request, take it, start the "still working" helper, save its
+ *  files and return what to print. The helper stops if saving fails. A stop
+ *  from the server returns what tells the chat to stand down. */
+export async function nextRequest(remote: Remote, app: string, dir: string, session: ListenerSession, startHeartbeat: (id: string) => { stop(): void }): Promise<string> {
+  let request: StudioRequest;
+  try {
+    request = await waitForRequest(remote, app, session);
+  } catch (error) {
+    if (error instanceof ListenerStopped) return describeStop(error, app);
+    throw error;
+  }
+  // Before anything slow: the studio drops a request nobody reports on.
+  const beat = startHeartbeat(request.id);
+  try {
     const extra: Record<string, unknown> = {};
     if (request.kind === "agent") {
       extra.models = await callTool(remote, "agent_tool", { id: request.id, name: "list_models", input: {} }).catch(() => null);
     }
-    return describeNext(request, saveRequest(dir, request, extra), app);
+    return describeNext(request, await saveRequestFiles(dir, request, extra), app);
+  } catch (error) {
+    beat.stop();
+    throw error;
   }
 }
 
@@ -146,8 +107,12 @@ export async function heartbeat(remote: Remote, id: string): Promise<void> {
   }
 }
 
-/** Start the helper as its own process, so it outlives `ronana next`. */
-export function spawnHeartbeat(id: string): void {
+/** Start the helper as its own process, so it outlives `ronana next`. A
+ *  helper that cannot start costs only the progress pings, never the request. */
+export function spawnHeartbeat(id: string): { stop(): void } {
   // execArgv keeps a loader the CLI was started with (a source checkout).
-  spawn(process.execPath, [...process.execArgv, process.argv[1]!, "next", "--heartbeat", id], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+  const child = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "next", "--heartbeat", id], { detached: true, stdio: "ignore", windowsHide: true });
+  child.once("error", () => { /* no helper: the studio may stop waiting sooner */ });
+  child.unref();
+  return { stop: () => { try { child.kill(); } catch { /* already gone */ } } };
 }

@@ -2,7 +2,7 @@
 // can be tested: argv parsing, and turning flags into a model's provider-native
 // `input` body using the contract `get_model` publishes.
 
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -11,7 +11,10 @@ export interface Args { positional: string[]; flags: Map<string, string[]> }
 const BOOLEAN_FLAGS = new Set(["json", "wait", "help", "no_browser", "on_startup", "off_startup", "background"]);
 /** CLI options that are meaningless without a value. A model's own fields stay
  *  lenient, since a bare `--sound` means true. */
-const VALUE_FLAGS = new Set(["out", "input", "idempotency_key", "base_url", "wait_timeout", "wait_interval", "limit", "kind", "file", "app", "heartbeat"]);
+const VALUE_FLAGS = new Set([
+  "out", "input", "idempotency_key", "base_url", "wait_timeout", "wait_interval", "limit", "kind", "file", "app", "heartbeat",
+  "model", "with", "command", "resolution",
+]);
 
 export function parseArgs(argv: string[]): Args {
   const positional: string[] = [];
@@ -34,7 +37,7 @@ export function parseArgs(argv: string[]): Args {
 
 export const flag = (args: Args, name: string) => args.flags.get(name)?.at(-1);
 export const has = (args: Args, name: string) => args.flags.has(name);
-export const takeFlag = (args: Args, name: string) => { const v = flag(args, name); args.flags.delete(name); return v; };
+const takeFlag = (args: Args, name: string) => { const v = flag(args, name); args.flags.delete(name); return v; };
 
 export interface JsonSchema {
   type?: string | string[]; enum?: unknown[]; default?: unknown; description?: string;
@@ -72,15 +75,24 @@ function coerce(field: string, raw: string, schema: JsonSchema | undefined): unk
   return raw;
 }
 
-async function readInputFlag(raw: string | undefined): Promise<Record<string, unknown>> {
-  if (!raw) return {};
-  const text = raw.startsWith("@")
-    ? await readFile(raw.slice(1), "utf8").catch(() => { throw new Error(`--input: cannot read ${raw.slice(1)}.`); })
-    : raw;
+/** One JSON object, from text. `what` names the source in the error. */
+export function parseJsonObject(text: string, what: string): Record<string, unknown> {
   let parsed: unknown;
-  try { parsed = JSON.parse(text); } catch { throw new Error("--input must be a JSON object (or @file.json)."); }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("--input must be a JSON object.");
+  try { parsed = JSON.parse(text); } catch { throw new Error(`${what} is not valid JSON.`); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`${what} must be one JSON object, like {"key": "value"}.`);
   return parsed as Record<string, unknown>;
+}
+
+/** A JSON-object argument: inline, `@file.json`, or `-` for stdin. */
+export async function readJsonArg(raw: string, what: string): Promise<Record<string, unknown>> {
+  if (raw === "-") return parseJsonObject(readFileSync(0, "utf8"), what);
+  if (!raw.startsWith("@")) return parseJsonObject(raw, what);
+  const path = raw.slice(1);
+  return parseJsonObject(await readFile(path, "utf8").catch(() => { throw new Error(`${what}: cannot read ${path}.`); }), what);
+}
+
+async function readInputFlag(raw: string | undefined): Promise<Record<string, unknown>> {
+  return raw ? readJsonArg(raw, "--input") : {};
 }
 
 /** A flag value written as a JSON array (`--images '["a","b"]'`), else null —

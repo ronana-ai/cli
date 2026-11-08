@@ -15,21 +15,31 @@
 //   ronana generate list [--limit n]
 //   ronana upscale <id | file | https-url> [--resolution r] [--model m] [--wait] [--out dir]
 //   ronana folder list | add <folder> <id…>
-//   ronana listen [--with claude|codex|cursor|gemini|grok|ollama|command] [--model m] [--command "…"] [--on-startup | --off-startup]
-//   ronana chat
+//
+// Answering the studio with your own AI (no credits):
+//   ronana next [--app "name"]           a chat's loop: wait for one request, print it, exit
+//   ronana reply <id> --file <f | ->     send that chat's answer
+//   ronana agent-tool <id> <tool>        an agent request's read-only lookups
+//   ronana listen [--with …] [--model m] [--command "…"] [--app "name"] [--on-startup | --off-startup]
+//   ronana chat                          open the Claude Code listener's conversation
 
 import { randomUUID } from "node:crypto";
-import { createWriteStream, existsSync, readFileSync, statSync } from "node:fs";
+import { createWriteStream, existsSync, statSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { login, logout, readCredentials } from "./oauth.js";
-import { callTool, remoteClient, ToolError, uploadFile } from "./remote.js";
-import { connectWithRetry, isFatal, listen, openConversation, runnerFor } from "./listen.js";
+import { login, logout, NOT_SIGNED_IN, readCredentials } from "./oauth.js";
+import { callTool, remoteClient, ToolError, uploadFile, type Remote } from "./remote.js";
+import { connectWithRetry, listen } from "./listen.js";
+import { claimListener } from "./lock.js";
 import { heartbeat, nextRequest, spawnHeartbeat } from "./next.js";
-import { backgroundLog, claimListener, installStartup, removeStartup, runningListener, stateDir, stopListener } from "./startup.js";
-import { buildInput, flag, has, isRemoteValue, parseArgs, replaceLocalMedia, typeOf, type Args, type JsonSchema, type ModelContract } from "./input.js";
+import { requestsDir, sessionDir } from "./paths.js";
+import { isFatal, listenerSession } from "./requests.js";
+import { runnerFor } from "./runners.js";
+import { openConversation } from "./session.js";
+import { backgroundLog, installStartup, removeStartup } from "./startup.js";
+import { buildInput, flag, has, isRemoteValue, parseArgs, readJsonArg, replaceLocalMedia, typeOf, type Args, type JsonSchema, type ModelContract } from "./input.js";
 
 const HELP = `Usage: ronana <command>
 
@@ -37,7 +47,7 @@ const HELP = `Usage: ronana <command>
   auth logout                   Sign out and revoke the token
   auth status                   Show the signed-in server
   account                       Plan and credit balance
-  model list [filter]           Models you can run (--kind image|video)
+  model list [filter]           Models you can run (--kind image|video; alias: models)
   model get <model>             A model's fields, media inputs and priced fields
   upload <file|https-url>       Add a reference to your library, print its id
   generate create <model>       Start a generation (costs credits)
@@ -46,20 +56,26 @@ const HELP = `Usage: ronana <command>
   generate wait <id>            Wait for a generation to finish
   generate list                 Recent generations (--limit n)
   upscale <id|file|url>         Upscale a video (costs credits; --resolution, --model)
-  folder list                   Your library folders
+  folder list                   Your library folders (alias: folders)
   folder add <folder> <id…>     File items into a folder (made if missing)
-  listen                        Let the studio send Enhance and agent work to an AI
-                                on this computer (--with claude|codex|cursor|gemini|grok|ollama|command,
-                                --model m, --command "…", --app "name"). No credits.
+
+Answer the studio with your own AI (Enhance, assistant, agent; no credits):
+  next [--app "name"]           For an AI chat that answers the studio itself: wait for
+                                one request, save its files, print it, and exit
+                                (run it as a background task, then again after replying)
+  reply <id> --file <f|->       Send a chat's answer to a request (a JSON object)
+  agent-tool <id> <tool>        An agent request's read-only lookups
+                                (--input <json|@file.json>)
+  listen                        Answer from a terminal instead: runs an AI on this
+                                computer per request (--with claude|codex|cursor|gemini|
+                                grok|ollama|command, --model m, --command "…", --app "name").
                                 --on-startup keeps it running in the background and
                                 starts it with your computer; --off-startup stops that.
-                                One listener runs per computer: a new one replaces it.
   chat                          Open the Claude Code listener's conversation in
                                 Claude Desktop (it remembers earlier requests)
-  next [--app "name"]           For an AI chat that answers the studio itself: wait for
-                                one request, print it, and exit (run it in the background)
-  reply <id> --file <f|->       Send a chat's answer to a request (a JSON object)
-  agent-tool <id> <tool>        An agent request's read-only lookups (--input '{…}')
+  One listener runs per account, on every device (next included): a new one
+  replaces it. A chat's next loop stops after 15 minutes with no request;
+  listen never times out.
 
 Generate flags:
   --<field> <value>             Any field from \`model get\`. Repeat for lists.
@@ -68,9 +84,11 @@ Generate flags:
   --wait                        Wait for the result and print its link
   --out <dir>                   Wait, then download the outputs into <dir>
   --wait-timeout <sec>          Default 600
+  --wait-interval <sec>         Least time between checks, default 3
   --idempotency-key <key>       Resend safely: same key bills once
 
-Global: --json for machine-readable output, --help.
+Global: --json for machine-readable output (generate, model, folder, upload,
+account, auth status), --help. auth login|logout|status also work without "auth".
 `;
 
 // ── output ───────────────────────────────────────────────────────────────────
@@ -81,7 +99,6 @@ const note = (line: string) => { if (!JSON_OUT) process.stderr.write(`${line}\n`
 const emit = (data: unknown, human: () => void) => JSON_OUT ? print(JSON.stringify(data, null, 2)) : human();
 
 // ── models ───────────────────────────────────────────────────────────────────
-type Remote = Awaited<ReturnType<typeof remoteClient>>;
 
 function describeField(name: string, schema: JsonSchema, required: boolean) {
   const type = typeOf(schema);
@@ -353,13 +370,11 @@ async function main() {
       const beatFor = flag(args, "heartbeat");
       if (beatFor) return withRemote((r) => heartbeat(r, beatFor));
       // One listener per computer, `next` included: the newest takes over.
-      const existing = runningListener();
-      if (existing) stopListener(existing);
-      claimListener(false);
+      claimListener({ background: false, kind: "next" });
       const app = flag(args, "app")?.trim() || "Claude Code";
       const remote = await connectWithRetry((line) => process.stderr.write(`${line}\n`));
       try {
-        return print(await nextRequest(remote, app, join(stateDir(), "requests"), spawnHeartbeat));
+        return print(await nextRequest(remote, app, requestsDir(), listenerSession("next"), spawnHeartbeat));
       } finally {
         await remote.close().catch(() => null);
       }
@@ -368,27 +383,21 @@ async function main() {
       const id = args.positional[0];
       const file = flag(args, "file");
       if (!id || !file) throw new Error("Usage: ronana reply <request id> --file <reply.json | ->");
-      const text = file === "-" ? readFileSync(0, "utf8") : readFileSync(resolve(file), "utf8");
-      let body: unknown;
-      try { body = JSON.parse(text); } catch { throw new Error("The reply file is not valid JSON."); }
-      if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("The reply must be one JSON object, like {\"prompt\": \"…\"}.");
-      await withRemote((r) => callTool(r, "reply", { ...(body as Record<string, unknown>), id }));
+      const body = await readJsonArg(file === "-" ? "-" : `@${resolve(file)}`, "The reply");
+      await withRemote((r) => callTool(r, "reply", { ...body, id }));
       return print("Sent to the studio.");
     }
     case "agent-tool": {
       const [id, name] = args.positional;
-      if (!id || !name) throw new Error("Usage: ronana agent-tool <request id> <tool> [--input '{…}']");
-      const input = flag(args, "input");
-      let parsed: unknown = {};
-      if (input) {
-        try { parsed = JSON.parse(input); } catch { throw new Error("--input must be a JSON object, like '{\"id\": \"google/nano-banana-2\"}'."); }
-      }
-      const result = await withRemote((r) => callTool(r, "agent_tool", { id, name, input: parsed }));
+      if (!id || !name) throw new Error("Usage: ronana agent-tool <request id> <tool> [--input <json | @file.json>]");
+      const raw = flag(args, "input");
+      const input = raw ? await readJsonArg(raw, "--input") : {};
+      const result = await withRemote((r) => callTool(r, "agent_tool", { id, name, input }));
       return print(JSON.stringify(result, null, 2));
     }
     case "chat": {
       // The Claude Code listener's ongoing conversation, opened in Claude Desktop.
-      if (!openConversation(join(stateDir(), "claude-session"))) return print("No conversation yet. It starts with the first request the Claude Code listener answers.");
+      if (!(await openConversation(sessionDir()))) return print("No conversation yet. It starts with the first request the Claude Code listener answers.");
       return print("Opening the listener's conversation in Claude Desktop.");
     }
     case "listen": {
@@ -397,10 +406,13 @@ async function main() {
         return;
       }
       // Claude Code keeps one ongoing conversation in its own folder, so it
-      // remembers earlier requests and the user can read it in Claude Code.
-      const runner = runnerFor(flag(args, "with") ?? "claude", { model: flag(args, "model"), command: flag(args, "command"), app: flag(args, "app"), session: join(stateDir(), "claude-session") });
+      // remembers earlier requests and the user can read it in Claude Code;
+      // it may also read the request files (attachments, guide, project).
+      const runner = runnerFor(flag(args, "with") ?? "claude", {
+        model: flag(args, "model"), command: flag(args, "command"), app: flag(args, "app"), session: sessionDir(), files: requestsDir(),
+      });
       if (has(args, "on_startup")) {
-        if (!readCredentials()) throw new Error("Not signed in. Run `ronana auth login` first.");
+        if (!readCredentials()) throw new Error(NOT_SIGNED_IN);
         // Which account it will listen for (best effort: offline still installs).
         const email = await withRemote((r) => callTool<{ email?: string }>(r, "get_account")).then((account) => account.email, () => undefined);
         const log = installStartup(rest);
@@ -416,22 +428,27 @@ async function main() {
       // is never on that command line, so the warning is noise here.
       process.noDeprecation = true;
       const log = background ? backgroundLog() : (line: string) => { process.stderr.write(`${line}\n`); };
-      // One listener per computer: two would take turns grabbing requests, and
-      // a forgotten old one (another window, an older version) answers some of
-      // them badly. The newest always wins: it stops the one already running.
-      const existing = runningListener();
-      if (existing) {
-        stopListener(existing);
-        log(`Stopped the listener that was already running (process ${existing.pid}); this one takes over.`);
+      // One listener per computer. The newest wins, except that a listener
+      // started with the computer steps aside for a chat that listens (`next`):
+      // the user started that one on purpose, and fighting it would take turns.
+      const claim = claimListener({ background, kind: "listen" }, (lock) => background && lock.kind === "next");
+      if ("yielded" in claim) {
+        log(`A chat is listening on this computer (process ${claim.yielded.pid}); this background listener stays off.`);
+        return;
       }
-      claimListener(background);
+      if (claim.stopped) log(`Stopped the listener that was already running (process ${claim.stopped.pid}); this one takes over.`);
       try {
         const remote = await connectWithRetry(log);
         const stop = () => { void remote.close().catch(() => null).finally(() => process.exit(0)); };
         process.once("SIGINT", stop);
         process.once("SIGTERM", stop);
         // In a terminal, show each request and the reply as it is written.
-        return await listen(remote, runner, log, background ? undefined : (text) => { process.stdout.write(text); });
+        const stopped = await listen(remote, runner, requestsDir(), log, background ? undefined : (text) => { process.stdout.write(text); });
+        // Another listener started for this account: stand down (exit 0 keeps
+        // a startup service from restarting into a fight).
+        log(stopped.message);
+        await remote.close().catch(() => null);
+        process.exit(0);
       } catch (error) {
         if (!background || !isFatal(error)) throw error;
         log(`Stopped: ${error instanceof Error ? error.message : String(error)}`);
