@@ -32,14 +32,17 @@ import { pipeline } from "node:stream/promises";
 import { login, logout, NOT_SIGNED_IN, readCredentials } from "./oauth.js";
 import { callTool, remoteClient, ToolError, uploadFile, type Remote } from "./remote.js";
 import { connectWithRetry, listen } from "./listen.js";
-import { claimListener } from "./lock.js";
-import { heartbeat, nextRequest, spawnHeartbeat } from "./next.js";
+import { claimListener, holdsListenerLock } from "./lock.js";
+import { describeStop, heartbeat, nextRequest, spawnHeartbeat } from "./next.js";
 import { requestsDir, sessionDir } from "./paths.js";
 import { isFatal, listenerSession } from "./requests.js";
 import { runnerFor } from "./runners.js";
 import { openConversation } from "./session.js";
 import { backgroundLog, installStartup, removeStartup } from "./startup.js";
 import { buildInput, flag, has, isRemoteValue, parseArgs, readJsonArg, replaceLocalMedia, typeOf, type Args, type JsonSchema, type ModelContract } from "./input.js";
+
+/** How often a waiting chat loop checks it still holds the listener lock. */
+const LOCK_CHECK_MS = 2_000;
 
 const HELP = `Usage: ronana <command>
 
@@ -372,10 +375,21 @@ async function main() {
       // One listener per computer, `next` included: the newest takes over.
       claimListener({ background: false, kind: "next" });
       const app = flag(args, "app")?.trim() || "Claude Code";
+      // A newer chat's loop takes the lock without killing this one: while it
+      // still waits, this loop stops and tells its chat why. (Once a request
+      // is in hand it finishes; the server lets only the newest loop claim.)
+      const watch = setInterval(() => {
+        if (holdsListenerLock()) return;
+        print(describeStop({ reason: "new-chat" }, app));
+        process.exit(0);
+      }, LOCK_CHECK_MS);
       const remote = await connectWithRetry((line) => process.stderr.write(`${line}\n`));
       try {
-        return print(await nextRequest(remote, app, requestsDir(), listenerSession("next"), spawnHeartbeat));
+        const text = await nextRequest(remote, app, requestsDir(), listenerSession("next"), spawnHeartbeat);
+        clearInterval(watch);
+        return print(text);
       } finally {
+        clearInterval(watch);
         await remote.close().catch(() => null);
       }
     }

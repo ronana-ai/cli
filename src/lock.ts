@@ -71,9 +71,21 @@ export function stopListener(lock: ListenerLock): void {
   if (current?.lock?.pid === lock.pid) try { unlinkSync(lockPath()); } catch { /* already gone */ }
 }
 
+/** Does this process still hold the lock (no other process has taken it)? A
+ *  missing lock counts as held: only a newer listener writing its own means
+ *  this one lost it. A chat loop that lost it to a newer
+ *  one stops by itself, saying why (see claimListener). */
+export function holdsListenerLock(): boolean {
+  const lock = readLock()?.lock;
+  return !lock || lock.pid === process.pid;
+}
+
 /** Take the lock for this process. The write is exclusive (`wx`), so two
  *  listeners starting together can't both believe they hold it. Whoever holds
- *  it now is stopped, unless `yieldTo` says to step aside for it. */
+ *  it now is stopped, unless `yieldTo` says to step aside for it. A chat loop
+ *  taking over from another chat loop only takes the lock: the older one sees
+ *  it is gone (holdsListenerLock) and exits telling its chat why, where being
+ *  killed would leave that chat with a bare failed command. */
 export function claimListener(self: { background: boolean; kind: "listen" | "next" }, yieldTo?: (lock: ListenerLock) => boolean): { stopped: ListenerLock | null } | { yielded: ListenerLock } {
   mkdirSync(stateDir(), { recursive: true });
   const record = JSON.stringify({ pid: process.pid, ...self } satisfies ListenerLock);
@@ -94,8 +106,10 @@ export function claimListener(self: { background: boolean; kind: "listen" | "nex
     const lock = held?.lock ?? null;
     if (lock && lock.pid !== process.pid && alive(lock.pid)) {
       if (yieldTo?.(lock)) return { yielded: lock };
-      killTree(lock.pid);
-      stopped = lock;
+      if (!(self.kind === "next" && lock.kind === "next")) {
+        killTree(lock.pid);
+        stopped = lock;
+      }
     }
     // Remove the stale lock only if it is still the one just read, so a
     // listener that claimed it in between keeps it (and wins the next round).

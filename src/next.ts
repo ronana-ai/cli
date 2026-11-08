@@ -60,10 +60,12 @@ export function describeNext(request: StudioRequest, files: RequestFiles, app: s
 /** What the chat reads when the server stopped its loop. It must tell the user
  *  and NOT start `ronana next` again: a restart would take over from whatever
  *  replaced it, or keep a loop nobody uses alive. */
-export function describeStop(stop: ListenerStopped, app: string): string {
+export function describeStop(stop: Pick<ListenerStopped, "reason"> | { reason: "new-chat" }, app: string): string {
   const why = stop.reason === "idle"
     ? "Listening for the Ronana studio stopped: no requests came in for 15 minutes."
-    : "Listening for the Ronana studio stopped: another app or computer started listening for this account, and only one listens at a time.";
+    : stop.reason === "new-chat"
+      ? "Listening for the Ronana studio stopped: a newer chat on this computer started listening, and only one listens at a time."
+      : "Listening for the Ronana studio stopped: another app or computer started listening for this account, and only one listens at a time.";
   return [
     `RONANA STUDIO: ${why}`,
     "Tell the user that in one short line, and do NOT run `ronana next` again unless they ask.",
