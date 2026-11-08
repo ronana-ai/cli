@@ -8,7 +8,7 @@
 // checks every reply; a refused one is handed back to the AI once to fix.
 
 import { spawn } from "node:child_process";
-import { callTool, ToolError, type remoteClient } from "./remote.js";
+import { callTool, remoteClient, ToolError } from "./remote.js";
 
 type Remote = Awaited<ReturnType<typeof remoteClient>>;
 
@@ -178,6 +178,27 @@ async function answerOnce(remote: Remote, runner: Runner, request: StudioRequest
   throw new Error(`${runner.app} could not produce an answer the studio accepts${refusal ? `: ${refusal}` : "."}`);
 }
 
+/** A failure that retrying cannot fix: the sign-in ended, or the plan has no
+ *  connected tools. Everything else (offline, a server hiccup) is retried. */
+export function isFatal(error: unknown): boolean {
+  if (error instanceof ToolError) return error.error.code === "SCOPE_REQUIRED" || error.error.code === "UNAUTHORIZED";
+  return error instanceof Error && /sign.?in|401|pricing|no ronana mcp endpoint/i.test(error.message);
+}
+
+/** Connect, retrying while the network is not there yet (a listener started
+ *  with the computer can run before Wi-Fi is up). */
+export async function connectWithRetry(log: (line: string) => void): Promise<Remote> {
+  for (let backoff = 2_000; ; backoff = Math.min(60_000, backoff * 2)) {
+    try {
+      return await remoteClient();
+    } catch (error) {
+      if (isFatal(error)) throw error;
+      log(`Can't reach Ronana yet (${error instanceof Error ? error.message : String(error)}). Retrying in ${backoff / 1000}s.`);
+      await new Promise((resolve) => setTimeout(resolve, backoff));
+    }
+  }
+}
+
 /** Listen until Ctrl+C. */
 export async function listen(remote: Remote, runner: Runner, log: (line: string) => void): Promise<never> {
   log(`Listening as ${runner.app}. Ronana's studio now sends Enhance and agent requests here (Ctrl+C to stop).`);
@@ -203,8 +224,7 @@ export async function listen(remote: Remote, runner: Runner, log: (line: string)
       }
     } catch (error) {
       // A refused sign-in or a missing plan will not fix itself: stop.
-      if (error instanceof ToolError && (error.error.code === "SCOPE_REQUIRED" || error.error.code === "UNAUTHORIZED")) throw error;
-      if (error instanceof Error && /sign.?in|401|pricing/i.test(error.message)) throw error;
+      if (isFatal(error)) throw error;
       backoff = Math.min(30_000, backoff ? backoff * 2 : 2_000);
       log(`Connection problem (${error instanceof Error ? error.message : String(error)}). Retrying in ${backoff / 1000}s.`);
       await new Promise((resolve) => setTimeout(resolve, backoff));

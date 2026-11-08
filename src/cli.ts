@@ -15,7 +15,7 @@
 //   ronana generate list [--limit n]
 //   ronana upscale <id | file | https-url> [--resolution r] [--model m] [--wait] [--out dir]
 //   ronana folder list | add <folder> <id…>
-//   ronana listen [--with claude|codex|cursor|gemini|grok|ollama|command] [--model m] [--command "…"]
+//   ronana listen [--with claude|codex|cursor|gemini|grok|ollama|command] [--model m] [--command "…"] [--on-startup | --off-startup]
 
 import { randomUUID } from "node:crypto";
 import { createWriteStream, existsSync, statSync } from "node:fs";
@@ -25,7 +25,8 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { login, logout, readCredentials } from "./oauth.js";
 import { callTool, remoteClient, ToolError, uploadFile } from "./remote.js";
-import { listen, runnerFor } from "./listen.js";
+import { connectWithRetry, isFatal, listen, runnerFor } from "./listen.js";
+import { backgroundLog, installStartup, removeStartup } from "./startup.js";
 import { buildInput, flag, has, isRemoteValue, parseArgs, replaceLocalMedia, typeOf, type Args, type JsonSchema, type ModelContract } from "./input.js";
 
 const HELP = `Usage: ronana <command>
@@ -48,6 +49,8 @@ const HELP = `Usage: ronana <command>
   listen                        Let the studio send Enhance and agent work to an AI
                                 on this computer (--with claude|codex|cursor|gemini|grok|ollama|command,
                                 --model m, --command "…", --app "name"). No credits.
+                                --on-startup keeps it running in the background and
+                                starts it with your computer; --off-startup stops that.
 
 Generate flags:
   --<field> <value>             Any field from \`model get\`. Repeat for lists.
@@ -335,12 +338,33 @@ async function main() {
     case "upscale": return upscaleCommand(args);
     case "folder": case "folders": return folderCommand(command === "folders" ? "list" : sub, args);
     case "listen": {
+      if (has(args, "off_startup")) {
+        print(removeStartup() ? "Removed. The listener no longer starts with your computer, and it was stopped." : "The listener wasn't set to start with your computer.");
+        return;
+      }
       const runner = runnerFor(flag(args, "with") ?? "claude", { model: flag(args, "model"), command: flag(args, "command"), app: flag(args, "app") });
-      const remote = await remoteClient();
-      const stop = () => { void remote.close().catch(() => null).finally(() => process.exit(0)); };
-      process.once("SIGINT", stop);
-      process.once("SIGTERM", stop);
-      return listen(remote, runner, (line) => process.stderr.write(`${line}\n`));
+      if (has(args, "on_startup")) {
+        if (!readCredentials()) throw new Error("Not signed in. Run `ronana auth login` first.");
+        const log = installStartup(rest);
+        print(`${runner.app} now listens in the background and starts with your computer. Log: ${log}`);
+        print("Turn it off with: ronana listen --off-startup");
+        return;
+      }
+      // Started with the computer: no terminal, so lines go to a log file, and
+      // a sign-in that ended stops it for good (exit 0 keeps the service down).
+      const background = has(args, "background");
+      const log = background ? backgroundLog() : (line: string) => { process.stderr.write(`${line}\n`); };
+      try {
+        const remote = await connectWithRetry(log);
+        const stop = () => { void remote.close().catch(() => null).finally(() => process.exit(0)); };
+        process.once("SIGINT", stop);
+        process.once("SIGTERM", stop);
+        return await listen(remote, runner, log);
+      } catch (error) {
+        if (!background || !isFatal(error)) throw error;
+        log(`Stopped: ${error instanceof Error ? error.message : String(error)}`);
+        process.exit(0);
+      }
     }
     default: throw new Error(`Unknown command "${command}". Run \`ronana --help\`.`);
   }

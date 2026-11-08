@@ -8,7 +8,7 @@ import { resolve } from "node:path";
 
 export interface Args { positional: string[]; flags: Map<string, string[]> }
 
-const BOOLEAN_FLAGS = new Set(["json", "wait", "help", "no_browser"]);
+const BOOLEAN_FLAGS = new Set(["json", "wait", "help", "no_browser", "on_startup", "off_startup", "background"]);
 /** CLI options that are meaningless without a value. A model's own fields stay
  *  lenient, since a bare `--sound` means true. */
 const VALUE_FLAGS = new Set(["out", "input", "idempotency_key", "base_url", "wait_timeout", "wait_interval", "limit", "kind"]);

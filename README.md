@@ -39,7 +39,7 @@ ronana generate get <id> | wait <id> [--out dir]
 ronana generate list
 ronana upscale <id | file | url> --resolution 4k --out ./renders
 ronana folder list | add <folder> <id…>
-ronana listen [--with claude|codex|cursor|gemini|grok|ollama|command] [--model m]
+ronana listen [--with claude|codex|cursor|gemini|grok|ollama|command] [--model m] [--on-startup | --off-startup]
 ```
 
 Every field from `model get` is a flag (`--aspect_ratio 16:9`, `--seed 7`).
@@ -61,6 +61,13 @@ models, so they cost no credits. Renders still do, and agent cards wait for
 your Confirm. `--with` picks the AI (Claude Code by default; also Codex, Cursor, Gemini CLI,
 Grok Build and Ollama); `--with command --command "…"` runs any program that
 reads the prompt on stdin and prints its answer.
+
+Add `--on-startup` to keep the listener running without a terminal: it runs in
+the background and starts again whenever you sign in to your computer
+(Windows, macOS and Linux with systemd; no admin rights needed). Its log is in
+your user folder, and the command prints where. `ronana listen --off-startup`
+stops it and removes it from startup. Install the CLI globally first
+(`npm i -g @ronana/mcp`), since startup needs a lasting copy to run.
 
 ## Use Ronana from an AI app
 
