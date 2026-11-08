@@ -15,4 +15,3 @@ export function stateDir(platform: Platform = process.platform as Platform, env:
 /** The temporary files each studio request leaves (swept after a day). */
 export const requestsDir = () => join(stateDir(), "requests");
 /** The Claude Code listener's ongoing conversation lives here. */
-export const sessionDir = () => join(stateDir(), "claude-session");

@@ -1,10 +1,8 @@
-// One listener per computer. Every listener on a computer signs in as the same
-// app, so the server can't tell two apart: they take turns grabbing requests,
-// and an old one left running (a terminal from last week, an older version)
-// answers some of them badly. So the running one keeps a lock in the state
-// folder: its process id, whether it runs in the background, and which kind it
-// is (`listen` or a chat's `next`). The newest takes over, except that a
-// listener started with the computer steps aside for a chat that listens.
+// One chat loop per computer. Every loop on a computer signs in as the same
+// app, so the server can't tell two apart. So the running one keeps a lock in
+// the state folder (its process id and kind), and the newest takes over. The
+// lock may still name a terminal listener (`listen`, discontinued after CLI
+// 0.4.8) from an older version: that one is stopped outright.
 
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
@@ -80,15 +78,14 @@ export function holdsListenerLock(): boolean {
   return !lock || lock.pid === process.pid;
 }
 
-/** Take the lock for this process. The write is exclusive (`wx`), so two
- *  listeners starting together can't both believe they hold it. Whoever holds
- *  it now is stopped, unless `yieldTo` says to step aside for it. A chat loop
- *  taking over from another chat loop only takes the lock: the older one sees
- *  it is gone (holdsListenerLock) and exits telling its chat why, where being
- *  killed would leave that chat with a bare failed command. */
-export function claimListener(self: { background: boolean; kind: "listen" | "next" }, yieldTo?: (lock: ListenerLock) => boolean): { stopped: ListenerLock | null } | { yielded: ListenerLock } {
+/** Take the lock for this chat loop. The write is exclusive (`wx`), so two
+ *  loops starting together can't both believe they hold it. An older loop only
+ *  loses the lock: it sees that (holdsListenerLock) and exits telling its chat
+ *  why, where being killed would leave that chat with a bare failed command.
+ *  An old terminal listener holding it is stopped (`stopped`). */
+export function claimListener(): { stopped: ListenerLock | null } {
   mkdirSync(stateDir(), { recursive: true });
-  const record = JSON.stringify({ pid: process.pid, ...self } satisfies ListenerLock);
+  const record = JSON.stringify({ pid: process.pid, background: false, kind: "next" } satisfies ListenerLock);
   let stopped: ListenerLock | null = null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
@@ -105,8 +102,7 @@ export function claimListener(self: { background: boolean; kind: "listen" | "nex
     const held = readLock();
     const lock = held?.lock ?? null;
     if (lock && lock.pid !== process.pid && alive(lock.pid)) {
-      if (yieldTo?.(lock)) return { yielded: lock };
-      if (!(self.kind === "next" && lock.kind === "next")) {
+      if (lock.kind !== "next") {
         killTree(lock.pid);
         stopped = lock;
       }
@@ -116,5 +112,5 @@ export function claimListener(self: { background: boolean; kind: "listen" | "nex
     const now = readLock();
     if (now && now.text === held?.text) try { unlinkSync(lockPath()); } catch { /* someone else did */ }
   }
-  throw new Error("Another listener keeps starting on this computer. Stop it, then try again.");
+  throw new Error("Another Ronana loop keeps starting on this computer. Stop it, then try again.");
 }

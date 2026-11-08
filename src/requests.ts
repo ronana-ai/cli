@@ -1,6 +1,6 @@
-// A studio request as the CLI handles it, shared by `ronana listen` (the AI
-// runs headless) and `ronana next` (a chat answers it): the one wait loop, the
-// files a request leaves for the AI to read, and the old-file sweep.
+// A studio request as the CLI's chat loop (`ronana next`) handles it: the one
+// wait loop, the files a request leaves for the AI to read, and the old-file
+// sweep.
 //
 // A request's long parts become files the AI reads once: the model's prompt
 // guide and the user's project (each named by model / version, so a chat that
@@ -13,7 +13,8 @@ import { createWriteStream, mkdirSync, readdirSync, rmSync, statSync, writeFileS
 import { extname, join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { callTool, ToolError, type Remote } from "./remote.js";
+import { callTool, remoteClient, ToolError, type Remote } from "./remote.js";
+import { CLI_VERSION } from "./version.js";
 
 /* ── the request, as the server describes it ───────────────────────────── */
 
@@ -53,7 +54,7 @@ export type StudioRequest = EnhanceRequest | AssistantRequest | AgentRequest;
 /** The user's latest message on an agent board. */
 export const lastUserMessage = (request: AgentRequest) => request.messages.filter((m) => m.role === "user").at(-1)?.content ?? "";
 
-/** What a reply holds for each kind (shown to a chat; listen builds it itself). */
+/** What a reply holds for each kind, as the chat is shown it. */
 export const REPLY_SHAPE: Record<StudioRequest["kind"], string> = {
   enhance: '{"prompt": "the rewritten prompt"}',
   assistant: '{"message": "your answer", "prompt": "a prompt for their composer, only if your answer has one"}',
@@ -74,18 +75,31 @@ export function isFatal(error: unknown): boolean {
 const IDLE_FLOOR_MS = 30_000;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** One listening session, as the server tells listeners apart. ONE listens per
- *  account: a new id takes over and the older one stops. `next` is a chat loop
- *  (stops after 15 quiet minutes), `listen` the terminal listener (never). */
-export interface ListenerSession { id: string; mode: "next" | "listen"; chatSession?: string }
+/** One chat loop's session, as the server tells loops apart. ONE listens per
+ *  account: a new id takes over and the older one stops; a loop stops after 15
+ *  quiet minutes. `mode` is what the server expects on the wire. */
+export interface ListenerSession { id: string; mode: "next"; chatSession?: string }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** A fresh session for this process. A chat loop names its Claude Code chat
  *  (when it runs in one), so the studio can reopen that same chat later. */
-export function listenerSession(mode: ListenerSession["mode"], env: Record<string, string | undefined> = process.env): ListenerSession {
+export function listenerSession(env: Record<string, string | undefined> = process.env): ListenerSession {
   const chat = env.CLAUDE_CODE_SESSION_ID;
-  return { id: randomUUID(), mode, ...(mode === "next" && chat && UUID.test(chat) ? { chatSession: chat } : {}) };
+  return { id: randomUUID(), mode: "next", ...(chat && UUID.test(chat) ? { chatSession: chat } : {}) };
+}
+
+/** Connect, retrying while the network is not there yet. */
+export async function connectWithRetry(log: (line: string) => void): Promise<Remote> {
+  for (let backoff = 2_000; ; backoff = Math.min(60_000, backoff * 2)) {
+    try {
+      return await remoteClient();
+    } catch (error) {
+      if (isFatal(error)) throw error;
+      log(`Can't reach Ronana yet (${error instanceof Error ? error.message : String(error)}). Retrying in ${backoff / 1000}s.`);
+      await new Promise((resolve) => setTimeout(resolve, backoff));
+    }
+  }
 }
 
 /** The server stopped this listener: another one started (`replaced`), or a
@@ -96,17 +110,24 @@ export class ListenerStopped extends Error {
   }
 }
 
+/** A newer CLI the server knows of, and the command that installs it. */
+export interface CliUpdate { latest: string; command: string }
+
 /** Hold `wait_for_requests` until a request arrives. A dropped connection is
  *  retried with backoff (reported through `onRetry`); a fatal one throws, and
- *  a stop throws ListenerStopped. */
-export async function waitForRequest(remote: Remote, app: string, session: ListenerSession, onRetry?: (error: unknown, waitMs: number) => void): Promise<StudioRequest> {
+ *  a stop throws ListenerStopped. Also returns the newest CLI the server
+ *  reported, when this one is older. */
+export async function waitForRequest(remote: Remote, app: string, session: ListenerSession, onRetry?: (error: unknown, waitMs: number) => void): Promise<{ request: StudioRequest; update: CliUpdate | null }> {
   let backoff = 0;
-  const args = { app, listener_id: session.id, mode: session.mode, ...(session.chatSession ? { chat_session: session.chatSession } : {}) };
+  let update: CliUpdate | null = null;
+  const args = { app, listener_id: session.id, mode: session.mode, cli_version: CLI_VERSION, ...(session.chatSession ? { chat_session: session.chatSession } : {}) };
   for (;;) {
     const asked = Date.now();
     let request: StudioRequest | null;
     try {
-      ({ request } = await callTool<{ request: StudioRequest | null }>(remote, "wait_for_requests", args));
+      let reported: CliUpdate | undefined;
+      ({ request, update: reported } = await callTool<{ request: StudioRequest | null; update?: CliUpdate }>(remote, "wait_for_requests", args));
+      update = reported ?? null;
       backoff = 0;
     } catch (error) {
       if (error instanceof ToolError && error.error.code === "LISTENER_STOPPED") {
@@ -118,7 +139,7 @@ export async function waitForRequest(remote: Remote, app: string, session: Liste
       await sleep(backoff);
       continue;
     }
-    if (request) return request;
+    if (request) return { request, update };
     if (Date.now() - asked < IDLE_FLOOR_MS) await sleep(IDLE_FLOOR_MS);
   }
 }

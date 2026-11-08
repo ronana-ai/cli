@@ -20,8 +20,7 @@
 //   ronana next [--app "name"]           a chat's loop: wait for one request, print it, exit
 //   ronana reply <id> --file <f | ->     send that chat's answer
 //   ronana agent-tool <id> <tool>        an agent request's read-only lookups
-//   ronana listen [--with …] [--model m] [--command "…"] [--app "name"] [--on-startup | --off-startup]
-//   ronana chat                          open the Claude Code listener's conversation
+//   ronana listen                        (discontinued) removes the old terminal listener
 
 import { randomUUID } from "node:crypto";
 import { createWriteStream, existsSync, statSync } from "node:fs";
@@ -29,16 +28,14 @@ import { mkdir } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { login, logout, NOT_SIGNED_IN, readCredentials } from "./oauth.js";
+import { login, logout, readCredentials } from "./oauth.js";
 import { callTool, remoteClient, ToolError, uploadFile, type Remote } from "./remote.js";
-import { connectWithRetry, listen } from "./listen.js";
 import { claimListener, holdsListenerLock } from "./lock.js";
 import { describeStop, heartbeat, nextRequest, spawnHeartbeat } from "./next.js";
-import { requestsDir, sessionDir } from "./paths.js";
-import { isFatal, listenerSession } from "./requests.js";
-import { runnerFor } from "./runners.js";
-import { openConversation } from "./session.js";
-import { backgroundLog, installStartup, removeStartup } from "./startup.js";
+import { requestsDir } from "./paths.js";
+import { connectWithRetry, listenerSession } from "./requests.js";
+import { removeOldListener } from "./startup.js";
+import { CLI_VERSION } from "./version.js";
 import { buildInput, flag, has, isRemoteValue, parseArgs, readJsonArg, replaceLocalMedia, typeOf, type Args, type JsonSchema, type ModelContract } from "./input.js";
 
 /** How often a waiting chat loop checks it still holds the listener lock. */
@@ -69,16 +66,8 @@ Answer the studio with your own AI (Enhance, assistant, agent; no credits):
   reply <id> --file <f|->       Send a chat's answer to a request (a JSON object)
   agent-tool <id> <tool>        An agent request's read-only lookups
                                 (--input <json|@file.json>)
-  listen                        Answer from a terminal instead: runs an AI on this
-                                computer per request (--with claude|codex|cursor|gemini|
-                                grok|ollama|command, --model m, --command "…", --app "name").
-                                --on-startup keeps it running in the background and
-                                starts it with your computer; --off-startup stops that.
-  chat                          Open the Claude Code listener's conversation in
-                                Claude Desktop (it remembers earlier requests)
-  One listener runs per account, on every device (next included): a new one
-  replaces it. A chat's next loop stops after 15 minutes with no request;
-  listen never times out.
+  One loop runs per account, on every device: a new one replaces it. A loop
+  stops after 15 minutes with no request.
 
 Generate flags:
   --<field> <value>             Any field from \`model get\`. Repeat for lists.
@@ -91,7 +80,7 @@ Generate flags:
   --idempotency-key <key>       Resend safely: same key bills once
 
 Global: --json for machine-readable output (generate, model, folder, upload,
-account, auth status), --help. auth login|logout|status also work without "auth".
+account, auth status), --help, --version. auth login|logout|status also work without "auth".
 `;
 
 // ── output ───────────────────────────────────────────────────────────────────
@@ -327,6 +316,7 @@ async function main() {
   const sub = takesSub ? args.positional.shift() : undefined;
   JSON_OUT = has(args, "json");
   if (!command || ["help", "--help", "-h"].includes(command) || has(args, "help")) return void process.stdout.write(HELP);
+  if (["version", "--version", "-v"].includes(command)) return print(CLI_VERSION);
 
   switch (command) {
     case "auth":
@@ -372,8 +362,8 @@ async function main() {
       // The detached "still working" helper a `next` run leaves behind.
       const beatFor = flag(args, "heartbeat");
       if (beatFor) return withRemote((r) => heartbeat(r, beatFor));
-      // One listener per computer, `next` included: the newest takes over.
-      claimListener({ background: false, kind: "next" });
+      // One loop per computer: the newest takes over.
+      claimListener();
       const app = flag(args, "app")?.trim() || "Claude Code";
       // A newer chat's loop takes the lock without killing this one: while it
       // still waits, this loop stops and tells its chat why. (Once a request
@@ -385,7 +375,7 @@ async function main() {
       }, LOCK_CHECK_MS);
       const remote = await connectWithRetry((line) => process.stderr.write(`${line}\n`));
       try {
-        const text = await nextRequest(remote, app, requestsDir(), listenerSession("next"), spawnHeartbeat);
+        const text = await nextRequest(remote, app, requestsDir(), listenerSession(), spawnHeartbeat);
         clearInterval(watch);
         return print(text);
       } finally {
@@ -409,65 +399,14 @@ async function main() {
       const result = await withRemote((r) => callTool(r, "agent_tool", { id, name, input }));
       return print(JSON.stringify(result, null, 2));
     }
-    case "chat": {
-      // The Claude Code listener's ongoing conversation, opened in Claude Desktop.
-      if (!(await openConversation(sessionDir()))) return print("No conversation yet. It starts with the first request the Claude Code listener answers.");
-      return print("Opening the listener's conversation in Claude Desktop.");
-    }
-    case "listen": {
-      if (has(args, "off_startup")) {
-        print(removeStartup() ? "Removed. The listener no longer starts with your computer, and it was stopped." : "The listener wasn't set to start with your computer.");
-        return;
-      }
-      // Claude Code keeps one ongoing conversation in its own folder, so it
-      // remembers earlier requests and the user can read it in Claude Code;
-      // it may also read the request files (attachments, guide, project).
-      const runner = runnerFor(flag(args, "with") ?? "claude", {
-        model: flag(args, "model"), command: flag(args, "command"), app: flag(args, "app"), session: sessionDir(), files: requestsDir(),
-      });
-      if (has(args, "on_startup")) {
-        if (!readCredentials()) throw new Error(NOT_SIGNED_IN);
-        // Which account it will listen for (best effort: offline still installs).
-        const email = await withRemote((r) => callTool<{ email?: string }>(r, "get_account")).then((account) => account.email, () => undefined);
-        const log = installStartup(rest);
-        print(`${runner.app} now listens in the background${email ? ` for ${email}` : ""} and starts with your computer. Log: ${log}`);
-        print("Turn it off with: ronana listen --off-startup");
-        return;
-      }
-      // Started with the computer: no terminal, so lines go to a log file, and
-      // a sign-in that ended stops it for good (exit 0 keeps the service down).
-      const background = has(args, "background");
-      // Node warns about running a CLI through the Windows shell (it has to:
-      // `claude` is a .cmd there) in the middle of the live reply. The prompt
-      // is never on that command line, so the warning is noise here.
-      process.noDeprecation = true;
-      const log = background ? backgroundLog() : (line: string) => { process.stderr.write(`${line}\n`); };
-      // One listener per computer. The newest wins, except that a listener
-      // started with the computer steps aside for a chat that listens (`next`):
-      // the user started that one on purpose, and fighting it would take turns.
-      const claim = claimListener({ background, kind: "listen" }, (lock) => background && lock.kind === "next");
-      if ("yielded" in claim) {
-        log(`A chat is listening on this computer (process ${claim.yielded.pid}); this background listener stays off.`);
-        return;
-      }
-      if (claim.stopped) log(`Stopped the listener that was already running (process ${claim.stopped.pid}); this one takes over.`);
-      try {
-        const remote = await connectWithRetry(log);
-        const stop = () => { void remote.close().catch(() => null).finally(() => process.exit(0)); };
-        process.once("SIGINT", stop);
-        process.once("SIGTERM", stop);
-        // In a terminal, show each request and the reply as it is written.
-        const stopped = await listen(remote, runner, requestsDir(), log, background ? undefined : (text) => { process.stdout.write(text); });
-        // Another listener started for this account: stand down (exit 0 keeps
-        // a startup service from restarting into a fight).
-        log(stopped.message);
-        await remote.close().catch(() => null);
-        process.exit(0);
-      } catch (error) {
-        if (!background || !isFatal(error)) throw error;
-        log(`Stopped: ${error instanceof Error ? error.message : String(error)}`);
-        process.exit(0);
-      }
+    case "listen": case "chat": {
+      // The terminal listener was discontinued: a chat's `next` loop answers
+      // the studio now. Clean up what an older version left behind (a startup
+      // entry, a listener still running), so it can never answer again.
+      const removed = removeOldListener();
+      if (removed) print("Removed the old Ronana listener from this computer.");
+      print("The terminal listener was discontinued. Your AI answers the studio from its own chat now: ask it to run `ronana next --app \"<its name>\"` as a background task.");
+      return;
     }
     default: throw new Error(`Unknown command "${command}". Run \`ronana --help\`.`);
   }
