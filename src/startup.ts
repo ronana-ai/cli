@@ -132,26 +132,69 @@ function currentSpec(argv: string[]): StartupSpec {
   return { node: process.execPath, script, args: startupArgs(argv), path: process.env.PATH ?? "" };
 }
 
-/** Windows only (launchd and systemd stop their own): stop the background
- *  listener by its recorded process id, but only while that id is still a
- *  node process, never an unrelated program that reused the number. */
-function stopRunningWindows(): void {
+/* ── one listener per computer ──────────────────────────────────────────
+   Every listener on a computer signs in as the same app, so the server can't
+   tell two apart: they take turns grabbing requests, and an old one left
+   running (a terminal from last week, an older version) answers some of them
+   badly. So the listener keeps a lock in its state folder: the running one's
+   process id and whether it runs in the background. */
+export interface ListenerLock { pid: number; background: boolean }
+
+/** The lock file as written: JSON, or a bare pid from versions before 0.4.5
+ *  (those were always the background listener). */
+export function parseLock(text: string): ListenerLock | null {
+  const trimmed = text.trim();
+  if (/^\d+$/.test(trimmed)) return { pid: Number(trimmed), background: true };
   try {
-    const pid = Number(readFileSync(pidPath(), "utf8").trim());
-    if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) {
-      const row = execFileSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8" });
-      if (row.toLowerCase().includes(`"${basename(process.execPath).toLowerCase()}"`)) process.kill(pid);
-    }
-  } catch { /* none running */ }
+    const value = JSON.parse(trimmed) as Partial<ListenerLock>;
+    return Number.isInteger(value.pid) && (value.pid as number) > 0 ? { pid: value.pid as number, background: value.background === true } : null;
+  } catch { return null; }
+}
+
+/** Is that process still running, and still node (never an unrelated program
+ *  that reused the number, which Windows does readily)? */
+function alive(pid: number): boolean {
+  try { process.kill(pid, 0); } catch { return false; }
+  if (process.platform !== "win32") return true;
+  try {
+    const row = execFileSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8", windowsHide: true });
+    return row.toLowerCase().includes(`"${basename(process.execPath).toLowerCase()}"`);
+  } catch { return false; }
+}
+
+/** The listener already running on this computer, other than this process. */
+export function runningListener(): ListenerLock | null {
+  let lock: ListenerLock | null = null;
+  try { lock = parseLock(readFileSync(pidPath(), "utf8")); } catch { return null; }
+  return lock && lock.pid !== process.pid && alive(lock.pid) ? lock : null;
+}
+
+/** Stop a running listener (it was checked alive and node just before). */
+export function stopListener(lock: ListenerLock): void {
+  try { process.kill(lock.pid); } catch { /* already gone */ }
   try { unlinkSync(pidPath()); } catch { /* already gone */ }
 }
+
+/** Hold the lock for this process, and let it go on exit. A process killed
+ *  outright leaves its lock behind; the next listener sees it is not running. */
+export function claimListener(background: boolean): void {
+  mkdirSync(stateDir(), { recursive: true });
+  writeFileSync(pidPath(), JSON.stringify({ pid: process.pid, background } satisfies ListenerLock));
+  process.once("exit", () => {
+    try { if (parseLock(readFileSync(pidPath(), "utf8"))?.pid === process.pid) unlinkSync(pidPath()); } catch { /* already gone */ }
+  });
+}
+
 
 export function installStartup(argv: string[]): string {
   const spec = currentSpec(argv);
   const platform = process.platform;
   mkdirSync(stateDir(), { recursive: true });
+  // Setting up the background listener takes over from whichever one runs now
+  // (a terminal one included); otherwise the new one would step aside.
+  const running = runningListener();
+  if (running) stopListener(running);
   if (platform === "win32") {
-    stopRunningWindows();
     run("reg", ["add", WIN_RUN_KEY, "/v", WIN_VALUE, "/t", "REG_SZ", "/d", windowsRunCommand(spec), "/f"]);
     spawn(spec.node, [spec.script, ...spec.args], { detached: true, stdio: "ignore", windowsHide: true }).unref();
   } else if (platform === "darwin") {
@@ -194,17 +237,18 @@ export function removeStartup(): boolean {
     tryRun("systemctl", ["--user", "disable", "--now", `${STARTUP_NAME}.service`]);
     if (found) { unlinkSync(file); tryRun("systemctl", ["--user", "daemon-reload"]); }
   }
-  if (process.platform === "win32") stopRunningWindows();
+  // Only the background listener: a terminal one the user is watching stays.
+  const running = runningListener();
+  if (running?.background) stopListener(running);
   return found;
 }
 
 /* ── the background listener's side ─────────────────────────────────────── */
 
-/** Record this process as the background listener and return its log line
- *  writer (timestamped, appended; the old log moves aside past 1 MB). */
+/** The background listener's log line writer (timestamped, appended; the
+ *  old log moves aside past 1 MB). The lock is claimListener's job. */
 export function backgroundLog(): (line: string) => void {
   mkdirSync(stateDir(), { recursive: true });
-  writeFileSync(pidPath(), String(process.pid));
   const file = logPath();
   try { if (statSync(file).size > LOG_MAX_BYTES) renameSync(file, `${file}.old`); } catch { /* no log yet */ }
   return (line) => { try { appendFileSync(file, `${new Date().toISOString()} ${line}\n`); } catch { /* disk full: keep listening */ } };

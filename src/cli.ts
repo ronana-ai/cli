@@ -27,7 +27,7 @@ import { pipeline } from "node:stream/promises";
 import { login, logout, readCredentials } from "./oauth.js";
 import { callTool, remoteClient, ToolError, uploadFile } from "./remote.js";
 import { connectWithRetry, isFatal, listen, openConversation, runnerFor } from "./listen.js";
-import { backgroundLog, installStartup, removeStartup, stateDir } from "./startup.js";
+import { backgroundLog, claimListener, installStartup, removeStartup, runningListener, stateDir, stopListener } from "./startup.js";
 import { buildInput, flag, has, isRemoteValue, parseArgs, replaceLocalMedia, typeOf, type Args, type JsonSchema, type ModelContract } from "./input.js";
 
 const HELP = `Usage: ronana <command>
@@ -52,6 +52,7 @@ const HELP = `Usage: ronana <command>
                                 --model m, --command "…", --app "name"). No credits.
                                 --on-startup keeps it running in the background and
                                 starts it with your computer; --off-startup stops that.
+                                One listener runs per computer: a new one replaces it.
   chat                          Open the Claude Code listener's conversation in
                                 Claude Desktop (it remembers earlier requests)
 
@@ -366,7 +367,20 @@ async function main() {
       // Started with the computer: no terminal, so lines go to a log file, and
       // a sign-in that ended stops it for good (exit 0 keeps the service down).
       const background = has(args, "background");
+      // Node warns about running a CLI through the Windows shell (it has to:
+      // `claude` is a .cmd there) in the middle of the live reply. The prompt
+      // is never on that command line, so the warning is noise here.
+      process.noDeprecation = true;
       const log = background ? backgroundLog() : (line: string) => { process.stderr.write(`${line}\n`); };
+      // One listener per computer: two would take turns grabbing requests, and
+      // a forgotten old one (another window, an older version) answers some of
+      // them badly. The newest always wins: it stops the one already running.
+      const existing = runningListener();
+      if (existing) {
+        stopListener(existing);
+        log(`Stopped the listener that was already running (process ${existing.pid}); this one takes over.`);
+      }
+      claimListener(background);
       try {
         const remote = await connectWithRetry(log);
         const stop = () => { void remote.close().catch(() => null).finally(() => process.exit(0)); };

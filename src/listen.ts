@@ -112,14 +112,25 @@ export const STREAM_ARGS = ["--output-format", "stream-json", "--verbose", "--in
 
 /** One stream-json line: the text it adds, whether it is thinking, or the
  *  final answer. Anything else (system, tool, rate-limit events) is ignored. */
-export function readStreamLine(line: string): { text?: string; thinking?: boolean; result?: string } {
-  let event: { type?: string; result?: unknown; event?: { delta?: { type?: string; text?: unknown } } };
+export function readStreamLine(line: string): { text?: string; thinking?: boolean; result?: string; model?: string } {
+  let event: { type?: string; subtype?: string; model?: unknown; result?: unknown; event?: { delta?: { type?: string; text?: unknown } } };
   try { event = JSON.parse(line) as typeof event; } catch { return {}; }
   if (event.type === "result") return typeof event.result === "string" ? { result: event.result } : {};
+  // The first event names the model this answer runs on.
+  if (event.type === "system" && event.subtype === "init" && typeof event.model === "string") return { model: event.model };
   const delta = event.type === "stream_event" ? event.event?.delta : undefined;
   if (delta?.type === "text_delta" && typeof delta.text === "string") return { text: delta.text };
   if (delta?.type === "thinking_delta") return { thinking: true };
   return {};
+}
+
+/** A Claude model id as people say it: "claude-opus-5-5" → "Opus 5.5",
+ *  "claude-haiku-4-5-20251001" → "Haiku 4.5". Anything else as it is. */
+export function modelLabel(id: string): string {
+  const match = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?$/i.exec(id);
+  if (!match) return id;
+  const name = match[1]!.charAt(0).toUpperCase() + match[1]!.slice(1);
+  return `${name} ${match[2]}${match[3] ? `.${match[3]}` : ""}`;
 }
 
 /** Run the AI once. Resolves with what it printed. With `live`, Claude Code's
@@ -159,6 +170,7 @@ export function runOnce(runner: Runner, prompt: string, timeoutMs: number, guide
       pending = lines.pop() ?? "";
       for (const line of lines) {
         const step = readStreamLine(line);
+        if (step.model) live?.(`(${modelLabel(step.model)}) `);
         if (step.thinking && !thinkingShown) { thinkingShown = true; live?.("(thinking…)\n"); }
         if (step.text) { out += step.text; live?.(step.text); }
         // The final answer replaces the pieces: it is the whole reply.

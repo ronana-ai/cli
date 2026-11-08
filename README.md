@@ -62,21 +62,24 @@ your Confirm. `--with` picks the AI (Claude Code by default; also Codex, Cursor,
 Grok Build and Ollama); `--with command --command "…"` runs any program that
 reads the prompt on stdin and prints its answer.
 
-Add `--on-startup` to keep the listener running without a terminal: it runs in
-the background and starts again whenever you sign in to your computer
-(Windows, macOS and Linux with systemd; no admin rights needed). Its log is in
-your user folder, and the command prints where. `ronana listen --off-startup`
-stops it and removes it from startup.
+The easiest way to run it is to let a desktop AI start it for you: in Claude
+Code (including the Code tab in Claude Desktop), Codex or Cursor, ask it to run
+`ronana listen --with claude` (or `codex` / `cursor`) as a background task. You
+see it working in that app, and it stops when you close the app. You can also
+run it in a terminal and leave the window open: each request shows what you
+asked, and Claude Code's reply appears as it writes it.
 
 With Claude Code, the listener answers every request inside one ongoing
 conversation, so it remembers your earlier prompts. It starts a new one after a
 few hours of quiet or a handful of requests. `ronana chat` opens that
-conversation in Claude Desktop so you can read it (Claude Code 2.1.285 or
-later). Nothing opens a window while it works.
+conversation in Claude Desktop (Claude Code 2.1.285 or later).
 
-Run `listen` in a terminal (without `--on-startup`) to watch it work: each
-request shows what you asked, and Claude Code's reply appears as it writes it. Install the CLI globally first
-(`npm i -g @ronana/mcp`), since startup needs a lasting copy to run.
+One listener runs per computer: starting a new one stops the one already
+running, so a forgotten window never answers in its place.
+
+Optional: `--on-startup` keeps a listener running in the background whenever
+you are signed in to your computer, and `ronana listen --off-startup` removes
+it. It needs a global install (`npm i -g @ronana/mcp`).
 
 ## Use Ronana from an AI app
 
