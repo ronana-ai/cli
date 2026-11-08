@@ -66,7 +66,13 @@ Add `--on-startup` to keep the listener running without a terminal: it runs in
 the background and starts again whenever you sign in to your computer
 (Windows, macOS and Linux with systemd; no admin rights needed). Its log is in
 your user folder, and the command prints where. `ronana listen --off-startup`
-stops it and removes it from startup. Install the CLI globally first
+stops it and removes it from startup.
+
+With Claude Code, the listener answers every request inside one ongoing
+conversation, so it remembers your earlier prompts. It starts a new one after a
+few hours of quiet or a handful of requests. `ronana chat` opens that
+conversation in Claude Desktop so you can read it (Claude Code 2.1.285 or
+later). Nothing opens a window while it works. Install the CLI globally first
 (`npm i -g @ronana/mcp`), since startup needs a lasting copy to run.
 
 ## Use Ronana from an AI app
@@ -140,7 +146,7 @@ library.
 | `finish_upload` | Add a file uploaded with `create_upload` to the library. |
 | `list_folders` | List the folders in the library. |
 | `add_to_folder` | File library items into a folder. |
-| `get_account` | Get the plan and credit balance. |
+| `get_account` | Get the signed-in account's email, plan and credit balance. |
 | `wait_for_requests` | Wait for Enhance, assistant and agent work from the studio. While an app calls it, the studio lists it as listening. |
 | `get_request` | Read one request the studio sent, by its id. |
 | `request_progress` | Tell the studio you are still working on a request you took, so a slow answer is not treated as abandoned. |

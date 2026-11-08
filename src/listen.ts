@@ -8,6 +8,9 @@
 // checks every reply; a refused one is handed back to the AI once to fix.
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { callTool, remoteClient, ToolError } from "./remote.js";
 
 type Remote = Awaited<ReturnType<typeof remoteClient>>;
@@ -15,19 +18,65 @@ type Remote = Awaited<ReturnType<typeof remoteClient>>;
 /** How the prompt reaches the AI: on stdin (most CLIs), or as the last
  *  argument for one that only takes it there (Grok Build's `-p <prompt>`). An
  *  argument prompt is never passed through a shell: the draft is the user's
- *  text, and a shell would run anything in it. */
-export interface Runner { app: string; command: string; args: string[]; shell: boolean; promptAsArg?: boolean }
+ *  text, and a shell would run anything in it. `session` keeps one ongoing
+ *  conversation across requests (Claude Code only). */
+export interface Runner { app: string; command: string; args: string[]; shell: boolean; promptAsArg?: boolean; session?: string }
+
+/* ── one ongoing conversation ─────────────────────────────────────────────
+   Claude Code answers every request inside ONE conversation, so it remembers
+   earlier prompts and answers the way a chat does, and that conversation can
+   be opened and read in Claude Code. It lives in its own folder (Claude Code
+   keeps conversations per folder). It starts over after a long quiet spell or
+   many requests: every request carries a long model guide, so a conversation
+   that grew forever would get slow and use more of the user's plan. */
+export interface SessionState { id: string; lastUsed: number; turns: number }
+export const SESSION_IDLE_MS = 6 * 60 * 60 * 1000;
+export const SESSION_MAX_TURNS = 8;
+
+/** The conversation the next request goes to, and the flags that reach it:
+ *  `--session-id` starts one under a known id, `--resume` continues it. */
+export function nextSession(state: SessionState | null, now: number, newId: () => string): { state: SessionState; args: string[] } {
+  if (state && now - state.lastUsed < SESSION_IDLE_MS && state.turns < SESSION_MAX_TURNS) {
+    return { state: { id: state.id, lastUsed: now, turns: state.turns + 1 }, args: ["--resume", state.id] };
+  }
+  const id = newId();
+  return { state: { id, lastUsed: now, turns: 1 }, args: ["--session-id", id] };
+}
+
+/** Open the listener's ongoing conversation in Claude Desktop (Claude Code's
+ *  documented `claude --desktop --resume <id>`; a website can't start that, so
+ *  it is a CLI command). Returns false when there is no conversation yet. */
+export function openConversation(dir: string): boolean {
+  const state = readSession(dir);
+  if (!state) return false;
+  spawn("claude", ["--desktop", "--resume", state.id], { cwd: dir, detached: true, stdio: "ignore", windowsHide: true, shell: process.platform === "win32" }).unref();
+  return true;
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function readSession(dir: string): SessionState | null {
+  try {
+    const parsed = JSON.parse(readFileSync(join(dir, "session.json"), "utf8")) as Partial<SessionState>;
+    // Only a real UUID: the id reaches a command line, through a shell on Windows.
+    return typeof parsed.id === "string" && UUID.test(parsed.id) && typeof parsed.lastUsed === "number" && typeof parsed.turns === "number"
+      ? { id: parsed.id, lastUsed: parsed.lastUsed, turns: parsed.turns } : null;
+  } catch { return null; }
+}
 
 /** The longest prompt sent as an argument. Windows caps a whole command line
  *  near 32k characters; past this the runner refuses instead of truncating. */
 export const MAX_ARG_PROMPT = 24_000;
 
 /** The AIs `--with` knows. Each reads the prompt (stdin, or one argument) and prints its answer. */
-export function runnerFor(name: string, options: { model?: string; command?: string; app?: string }): Runner {
+export function runnerFor(name: string, options: { model?: string; command?: string; app?: string; session?: string }): Runner {
   const shell = process.platform === "win32";
   const app = options.app?.trim();
   switch (name) {
-    case "claude": return { app: app || "Claude Code", command: "claude", args: ["-p", "--output-format", "text", ...(options.model ? ["--model", options.model] : [])], shell };
+    case "claude": return {
+      app: app || "Claude Code", command: "claude", args: ["-p", "--output-format", "text", ...(options.model ? ["--model", options.model] : [])], shell,
+      ...(options.session ? { session: options.session } : {}),
+    };
     case "codex": return { app: app || "Codex", command: "codex", args: ["exec", ...(options.model ? ["-m", options.model] : []), "-"], shell };
     case "gemini": return { app: app || "Gemini CLI", command: "gemini", args: options.model ? ["-m", options.model] : [], shell };
     // Cursor's CLI: print mode answers once and exits; piped stdin is the prompt.
@@ -51,18 +100,41 @@ export function runOnce(runner: Runner, prompt: string, timeoutMs: number): Prom
       reject(new Error(`${runner.app} takes the request as one command-line argument, and this one is too long. Use --with command with a CLI that reads stdin.`));
       return;
     }
-    const args = runner.promptAsArg ? [...runner.args, prompt] : runner.args;
-    const child = spawn(runner.command, args, { shell: runner.promptAsArg ? false : runner.shell, stdio: ["pipe", "pipe", "pipe"] });
+    let session: { state: SessionState; args: string[] } | null = null;
+    if (runner.session) {
+      mkdirSync(runner.session, { recursive: true });
+      session = nextSession(readSession(runner.session), Date.now(), randomUUID);
+    }
+    const base = session ? [...runner.args, ...session.args] : runner.args;
+    const args = runner.promptAsArg ? [...base, prompt] : base;
+    // windowsHide: the listener runs in the background (often started with
+    // the computer), so a console window popping up per request looks like
+    // something is wrong. The session's folder is the conversation's home.
+    const child = spawn(runner.command, args, {
+      shell: runner.promptAsArg ? false : runner.shell, stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
+      ...(runner.session ? { cwd: runner.session } : {}),
+    });
     let out = "";
     let err = "";
-    const timer = setTimeout(() => { child.kill(); reject(new Error(`${runner.app} took longer than ${Math.round(timeoutMs / 1000)}s.`)); }, timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill(); reject(new Error(`${runner.app} took longer than ${Math.round(timeoutMs / 1000)}s.`)); }, timeoutMs);
     child.stdout.on("data", (chunk: Buffer) => { out += chunk.toString("utf8"); });
     child.stderr.on("data", (chunk: Buffer) => { err += chunk.toString("utf8"); });
     child.on("error", (error) => { clearTimeout(timer); reject(new Error(`Could not start ${runner.command}: ${error.message}`)); });
     child.on("close", (code) => {
       clearTimeout(timer);
-      if (code === 0) resolve(out);
-      else reject(new Error(`${runner.app} exited with code ${code}${err.trim() ? `: ${err.trim().split("\n").slice(-3).join(" ")}` : ""}`));
+      if (code === 0) {
+        // Saved only after a success: a failed first request must not leave
+        // an id that `--resume` cannot find.
+        if (session && runner.session) { try { writeFileSync(join(runner.session, "session.json"), JSON.stringify(session.state)); } catch { /* next request starts over */ } }
+        resolve(out);
+      } else {
+        // A conversation that can't be resumed (deleted, corrupted) starts
+        // over on the next request instead of failing every one after it.
+        // A slow answer is not a broken conversation: keep its memory.
+        if (!timedOut && session?.args[0] === "--resume" && runner.session) { try { writeFileSync(join(runner.session, "session.json"), "null"); } catch { /* ignore */ } }
+        reject(new Error(`${runner.app} exited with code ${code}${err.trim() ? `: ${err.trim().split("\n").slice(-3).join(" ")}` : ""}`));
+      }
     });
     child.stdin.end(runner.promptAsArg ? "" : prompt);
   });
@@ -201,7 +273,10 @@ export async function connectWithRetry(log: (line: string) => void): Promise<Rem
 
 /** Listen until Ctrl+C. */
 export async function listen(remote: Remote, runner: Runner, log: (line: string) => void): Promise<never> {
-  log(`Listening as ${runner.app}. Ronana's studio now sends Enhance and agent requests here (Ctrl+C to stop).`);
+  // Name the account: a listener signed in to a different account than the
+  // studio's listens fine and is never used, with nothing else to say why.
+  const email = await callTool<{ email?: string }>(remote, "get_account").then((account) => account.email, () => undefined);
+  log(`Listening as ${runner.app}${email ? ` for ${email}` : ""}. Ronana's studio${email ? " on that account" : ""} now sends Enhance and agent requests here (Ctrl+C to stop).`);
   let backoff = 0;
   for (;;) {
     try {

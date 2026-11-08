@@ -35,7 +35,7 @@ export function startupArgs(argv: string[]): string[] {
 }
 
 /** Where the background listener keeps its log and process id. */
-export function stateDir(platform: Platform = process.platform as Platform, env = process.env, home = homedir()): string {
+export function stateDir(platform: Platform = process.platform as Platform, env: Record<string, string | undefined> = process.env, home = homedir()): string {
   if (platform === "win32") return join(env.LOCALAPPDATA || join(home, "AppData", "Local"), "ronana");
   if (platform === "darwin") return join(home, "Library", "Logs", "ronana");
   return join(env.XDG_STATE_HOME || join(home, ".local", "state"), "ronana");

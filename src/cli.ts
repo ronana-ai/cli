@@ -16,6 +16,7 @@
 //   ronana upscale <id | file | https-url> [--resolution r] [--model m] [--wait] [--out dir]
 //   ronana folder list | add <folder> <id…>
 //   ronana listen [--with claude|codex|cursor|gemini|grok|ollama|command] [--model m] [--command "…"] [--on-startup | --off-startup]
+//   ronana chat
 
 import { randomUUID } from "node:crypto";
 import { createWriteStream, existsSync, statSync } from "node:fs";
@@ -25,8 +26,8 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { login, logout, readCredentials } from "./oauth.js";
 import { callTool, remoteClient, ToolError, uploadFile } from "./remote.js";
-import { connectWithRetry, isFatal, listen, runnerFor } from "./listen.js";
-import { backgroundLog, installStartup, removeStartup } from "./startup.js";
+import { connectWithRetry, isFatal, listen, openConversation, runnerFor } from "./listen.js";
+import { backgroundLog, installStartup, removeStartup, stateDir } from "./startup.js";
 import { buildInput, flag, has, isRemoteValue, parseArgs, replaceLocalMedia, typeOf, type Args, type JsonSchema, type ModelContract } from "./input.js";
 
 const HELP = `Usage: ronana <command>
@@ -51,6 +52,8 @@ const HELP = `Usage: ronana <command>
                                 --model m, --command "…", --app "name"). No credits.
                                 --on-startup keeps it running in the background and
                                 starts it with your computer; --off-startup stops that.
+  chat                          Open the Claude Code listener's conversation in
+                                Claude Desktop (it remembers earlier requests)
 
 Generate flags:
   --<field> <value>             Any field from \`model get\`. Repeat for lists.
@@ -313,16 +316,17 @@ async function main() {
         if (!credentials) return emit({ signed_in: false, base_url: null }, () => print("Not signed in."));
         // Ask the server: a sign-in stored here may have been disconnected on
         // the website or have expired, and only the server knows.
-        const problem = await withRemote((r) => callTool(r, "get_account")).then(() => null, (error: unknown) =>
+        let email: string | undefined;
+        const problem = await withRemote((r) => callTool<{ email?: string }>(r, "get_account")).then((account) => { email = account.email; return null; }, (error: unknown) =>
           error instanceof ToolError ? null : error instanceof Error ? error.message : String(error));
-        return emit({ signed_in: problem === null, base_url: credentials.baseUrl, ...(problem ? { error: problem } : {}) },
-          () => print(problem ?? `Signed in to ${credentials.baseUrl}.`));
+        return emit({ signed_in: problem === null, base_url: credentials.baseUrl, ...(email ? { email } : {}), ...(problem ? { error: problem } : {}) },
+          () => print(problem ?? `Signed in to ${credentials.baseUrl}${email ? ` as ${email}` : ""}.`));
       }
       throw new Error("Use auth login | logout | status.");
     }
     case "account": {
-      const account = await withRemote((r) => callTool<{ tier: string; credits: number }>(r, "get_account"));
-      return emit(account, () => print(`${account.credits} credits · ${account.tier} plan`));
+      const account = await withRemote((r) => callTool<{ email?: string; tier: string; credits: number }>(r, "get_account"));
+      return emit(account, () => print(`${account.email ? `${account.email} · ` : ""}${account.credits} credits · ${account.tier} plan`));
     }
     case "model": case "models": return modelCommand(command === "models" ? "list" : sub, args);
     case "upload": {
@@ -337,16 +341,25 @@ async function main() {
     case "generate": return generateCommand(sub, args);
     case "upscale": return upscaleCommand(args);
     case "folder": case "folders": return folderCommand(command === "folders" ? "list" : sub, args);
+    case "chat": {
+      // The Claude Code listener's ongoing conversation, opened in Claude Desktop.
+      if (!openConversation(join(stateDir(), "claude-session"))) return print("No conversation yet. It starts with the first request the Claude Code listener answers.");
+      return print("Opening the listener's conversation in Claude Desktop.");
+    }
     case "listen": {
       if (has(args, "off_startup")) {
         print(removeStartup() ? "Removed. The listener no longer starts with your computer, and it was stopped." : "The listener wasn't set to start with your computer.");
         return;
       }
-      const runner = runnerFor(flag(args, "with") ?? "claude", { model: flag(args, "model"), command: flag(args, "command"), app: flag(args, "app") });
+      // Claude Code keeps one ongoing conversation in its own folder, so it
+      // remembers earlier requests and the user can read it in Claude Code.
+      const runner = runnerFor(flag(args, "with") ?? "claude", { model: flag(args, "model"), command: flag(args, "command"), app: flag(args, "app"), session: join(stateDir(), "claude-session") });
       if (has(args, "on_startup")) {
         if (!readCredentials()) throw new Error("Not signed in. Run `ronana auth login` first.");
+        // Which account it will listen for (best effort: offline still installs).
+        const email = await withRemote((r) => callTool<{ email?: string }>(r, "get_account")).then((account) => account.email, () => undefined);
         const log = installStartup(rest);
-        print(`${runner.app} now listens in the background and starts with your computer. Log: ${log}`);
+        print(`${runner.app} now listens in the background${email ? ` for ${email}` : ""} and starts with your computer. Log: ${log}`);
         print("Turn it off with: ronana listen --off-startup");
         return;
       }
