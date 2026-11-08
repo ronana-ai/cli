@@ -62,7 +62,15 @@ your Confirm. `--with` picks the AI (Claude Code by default; also Codex, Cursor,
 Grok Build and Ollama); `--with command --command "…"` runs any program that
 reads the prompt on stdin and prints its answer.
 
-The easiest way to run it is to let a desktop AI start it for you: in Claude
+Best of all, let a chat answer the studio itself, so you see every request and
+reply right in the conversation: in Claude Code (including the Code tab in
+Claude Desktop), Codex or Cursor, the chat runs `ronana next --app "Claude Code"`
+as a background task. It waits for one request, prints it with exactly how to
+answer, and exits; the chat answers it, sends it with `ronana reply <id> --file
+<reply.json>`, and starts `ronana next` again. It works while that chat is open.
+The studio's Autoreply sets this up for you.
+
+Or let a desktop AI start the listener for you: in Claude
 Code (including the Code tab in Claude Desktop), Codex or Cursor, ask it to run
 `ronana listen --with claude` (or `codex` / `cursor`) as a background task. You
 see it working in that app, and it stops when you close the app. You can also

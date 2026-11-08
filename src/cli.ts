@@ -19,7 +19,7 @@
 //   ronana chat
 
 import { randomUUID } from "node:crypto";
-import { createWriteStream, existsSync, statSync } from "node:fs";
+import { createWriteStream, existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
@@ -27,6 +27,7 @@ import { pipeline } from "node:stream/promises";
 import { login, logout, readCredentials } from "./oauth.js";
 import { callTool, remoteClient, ToolError, uploadFile } from "./remote.js";
 import { connectWithRetry, isFatal, listen, openConversation, runnerFor } from "./listen.js";
+import { heartbeat, nextRequest, spawnHeartbeat } from "./next.js";
 import { backgroundLog, claimListener, installStartup, removeStartup, runningListener, stateDir, stopListener } from "./startup.js";
 import { buildInput, flag, has, isRemoteValue, parseArgs, replaceLocalMedia, typeOf, type Args, type JsonSchema, type ModelContract } from "./input.js";
 
@@ -55,6 +56,10 @@ const HELP = `Usage: ronana <command>
                                 One listener runs per computer: a new one replaces it.
   chat                          Open the Claude Code listener's conversation in
                                 Claude Desktop (it remembers earlier requests)
+  next [--app "name"]           For an AI chat that answers the studio itself: wait for
+                                one request, print it, and exit (run it in the background)
+  reply <id> --file <f|->       Send a chat's answer to a request (a JSON object)
+  agent-tool <id> <tool>        An agent request's read-only lookups (--input '{…}')
 
 Generate flags:
   --<field> <value>             Any field from \`model get\`. Repeat for lists.
@@ -342,6 +347,45 @@ async function main() {
     case "generate": return generateCommand(sub, args);
     case "upscale": return upscaleCommand(args);
     case "folder": case "folders": return folderCommand(command === "folders" ? "list" : sub, args);
+    case "next": {
+      process.noDeprecation = true;
+      // The detached "still working" helper a `next` run leaves behind.
+      const beatFor = flag(args, "heartbeat");
+      if (beatFor) return withRemote((r) => heartbeat(r, beatFor));
+      // One listener per computer, `next` included: the newest takes over.
+      const existing = runningListener();
+      if (existing) stopListener(existing);
+      claimListener(false);
+      const app = flag(args, "app")?.trim() || "Claude Code";
+      const remote = await connectWithRetry((line) => process.stderr.write(`${line}\n`));
+      try {
+        return print(await nextRequest(remote, app, join(stateDir(), "requests"), spawnHeartbeat));
+      } finally {
+        await remote.close().catch(() => null);
+      }
+    }
+    case "reply": {
+      const id = args.positional[0];
+      const file = flag(args, "file");
+      if (!id || !file) throw new Error("Usage: ronana reply <request id> --file <reply.json | ->");
+      const text = file === "-" ? readFileSync(0, "utf8") : readFileSync(resolve(file), "utf8");
+      let body: unknown;
+      try { body = JSON.parse(text); } catch { throw new Error("The reply file is not valid JSON."); }
+      if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("The reply must be one JSON object, like {\"prompt\": \"…\"}.");
+      await withRemote((r) => callTool(r, "reply", { ...(body as Record<string, unknown>), id }));
+      return print("Sent to the studio.");
+    }
+    case "agent-tool": {
+      const [id, name] = args.positional;
+      if (!id || !name) throw new Error("Usage: ronana agent-tool <request id> <tool> [--input '{…}']");
+      const input = flag(args, "input");
+      let parsed: unknown = {};
+      if (input) {
+        try { parsed = JSON.parse(input); } catch { throw new Error("--input must be a JSON object, like '{\"id\": \"google/nano-banana-2\"}'."); }
+      }
+      const result = await withRemote((r) => callTool(r, "agent_tool", { id, name, input: parsed }));
+      return print(JSON.stringify(result, null, 2));
+    }
     case "chat": {
       // The Claude Code listener's ongoing conversation, opened in Claude Desktop.
       if (!openConversation(join(stateDir(), "claude-session"))) return print("No conversation yet. It starts with the first request the Claude Code listener answers.");
