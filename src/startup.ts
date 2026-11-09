@@ -17,11 +17,24 @@ import { runningListener, stopListener } from "./lock.js";
 const STARTUP_NAME = "ronana-listen";
 const MAC_LABEL = "ai.ronana.listen";
 const WIN_VALUE = "RonanaListen";
-const WIN_RUN_KEY = "HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+const WIN_RUN_KEY = "HKCUSoftwareMicrosoftWindowsCurrentVersionRun";
 
 const plistPath = () => join(homedir(), "Library", "LaunchAgents", `${MAC_LABEL}.plist`);
-const unitPath = () => join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "systemd", "user", `${STARTUP_NAME}.service`);
-const tryRun = (command: string, args: string[]) => { try { execFileSync(command, args, { stdio: "ignore" }); return true; } catch { return false; } };
+const unitPath = () =>
+  join(
+    process.env.XDG_CONFIG_HOME || join(homedir(), ".config"),
+    "systemd",
+    "user",
+    `${STARTUP_NAME}.service`,
+  );
+const tryRun = (command: string, args: string[]) => {
+  try {
+    execFileSync(command, args, { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+};
 const uid = () => process.getuid?.() ?? 0;
 
 /** Remove the old listener's startup entry, if any, and stop a terminal
@@ -39,10 +52,16 @@ export function removeOldListener(): boolean {
     const file = unitPath();
     found = existsSync(file);
     tryRun("systemctl", ["--user", "disable", "--now", `${STARTUP_NAME}.service`]);
-    if (found) { unlinkSync(file); tryRun("systemctl", ["--user", "daemon-reload"]); }
+    if (found) {
+      unlinkSync(file);
+      tryRun("systemctl", ["--user", "daemon-reload"]);
+    }
   }
   // A chat's loop (`next`) is the current way: leave it running.
   const running = runningListener();
-  if (running && running.kind !== "next") { stopListener(running); found = true; }
+  if (running && running.kind !== "next") {
+    stopListener(running);
+    found = true;
+  }
   return found;
 }

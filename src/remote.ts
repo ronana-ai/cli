@@ -22,16 +22,23 @@ export async function remoteClient() {
   } catch (error) {
     // A 401 on a token that was still in date: the server answers that for a
     // connection disconnected on the website.
-    if (error instanceof Error && /\b401\b|unauthori[sz]ed|revoked/i.test(error.message)) throw new Error(SIGN_IN_ENDED);
+    if (error instanceof Error && /\b401\b|unauthori[sz]ed|revoked/i.test(error.message))
+      throw new Error(SIGN_IN_ENDED);
     // A 404 means either an account outside the MCP rollout or a server with no
     // MCP at all (a wrong --base-url). Only a server that advertises the MCP
     // resource can be refusing the account.
     if (error instanceof Error && /not found/i.test(error.message)) {
-      const advertised = await fetch(`${credentials.baseUrl}/.well-known/oauth-protected-resource/mcp`)
-        .then((r) => r.ok, () => false);
-      throw new Error(advertised
-        ? `Ronana's CLI and MCP need a paid plan: ${credentials.baseUrl}/pricing`
-        : `No Ronana MCP endpoint at ${credentials.baseUrl}. Sign in again with the right --base-url.`);
+      const advertised = await fetch(
+        `${credentials.baseUrl}/.well-known/oauth-protected-resource/mcp`,
+      ).then(
+        (r) => r.ok,
+        () => false,
+      );
+      throw new Error(
+        advertised
+          ? `Ronana's CLI and MCP need a paid plan: ${credentials.baseUrl}/pricing`
+          : `No Ronana MCP endpoint at ${credentials.baseUrl}. Sign in again with the right --base-url.`,
+      );
     }
     throw error;
   }
@@ -50,16 +57,29 @@ export type Remote = Awaited<ReturnType<typeof remoteClient>>;
 
 /** Call one tool and unwrap the `{ ok, data | error }` envelope every Ronana
  *  tool answers with. */
-export async function callTool<T = unknown>(remote: Remote, name: string, args: Record<string, unknown> = {}): Promise<T> {
+export async function callTool<T = unknown>(
+  remote: Remote,
+  name: string,
+  args: Record<string, unknown> = {},
+): Promise<T> {
   const response = await remote.callTool({ name, arguments: args });
-  const body = response.structuredContent as { ok?: boolean; data?: unknown; error?: Record<string, unknown> } | undefined;
+  const body = response.structuredContent as
+    | { ok?: boolean; data?: unknown; error?: Record<string, unknown> }
+    | undefined;
   if (body?.ok) return body.data as T;
   if (body?.error) throw new ToolError(body.error);
-  const text = Array.isArray(response.content) ? response.content.map((c) => ("text" in c ? c.text : "")).join(" ") : "";
+  const text = Array.isArray(response.content)
+    ? response.content.map((c) => ("text" in c ? c.text : "")).join(" ")
+    : "";
   // The SDK's own argument check answers in prose ("Input validation error:
   // Invalid arguments for tool x: limit: Invalid input"); keep only the field.
   const invalid = /Invalid arguments for tool \S+: ([\w.[\]-]+):/.exec(text);
-  if (invalid) throw new ToolError({ code: "INVALID_REQUEST", message: `The value for "${invalid[1]}" is not valid.`, field: invalid[1] });
+  if (invalid)
+    throw new ToolError({
+      code: "INVALID_REQUEST",
+      message: `The value for "${invalid[1]}" is not valid.`,
+      field: invalid[1],
+    });
   throw new ToolError({ code: "TOOL_FAILED", message: text || `${name} failed.` });
 }
 
@@ -67,9 +87,19 @@ export async function callTool<T = unknown>(remote: Remote, name: string, args: 
    the most Vercel's 4.5 MB body cap lets through). */
 const INLINE_LIMIT = 3 * 1024 * 1024;
 const CONTENT_TYPES: Record<string, string> = {
-  ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
-  ".heic": "image/heic", ".avif": "image/avif", ".gif": "image/gif", ".mp4": "video/mp4",
-  ".mov": "video/quicktime", ".webm": "video/webm", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".webp": "image/webp",
+  ".heic": "image/heic",
+  ".avif": "image/avif",
+  ".gif": "image/gif",
+  ".mp4": "video/mp4",
+  ".mov": "video/quicktime",
+  ".webm": "video/webm",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".m4a": "audio/mp4",
 };
 
 /** Add a local file to the library and return its ref. Small files go inline
@@ -83,16 +113,27 @@ export async function uploadFile(remote: Remote, path: string) {
   if (size === 0) throw new Error(`${filename} is empty.`);
   if (size <= INLINE_LIMIT) {
     const data = (await readFile(path)).toString("base64");
-    return callTool<{ id: string; kind: string; reused: boolean }>(remote, "upload_reference", { data, filename });
+    return callTool<{ id: string; kind: string; reused: boolean }>(remote, "upload_reference", {
+      data,
+      filename,
+    });
   }
   const contentType = CONTENT_TYPES[extname(path).toLowerCase()];
   if (!contentType) throw new Error(`Unsupported file type: ${filename}`);
-  const ticket = await callTool<{ upload_id: string; upload_url: string; headers: Record<string, string> }>(
-    remote, "create_upload", { filename, content_type: contentType, size });
+  const ticket = await callTool<{
+    upload_id: string;
+    upload_url: string;
+    headers: Record<string, string>;
+  }>(remote, "create_upload", { filename, content_type: contentType, size });
   const put = await fetch(ticket.upload_url, {
-    method: "PUT", headers: ticket.headers,
-    body: Readable.toWeb(createReadStream(path)) as unknown as BodyInit, duplex: "half",
+    method: "PUT",
+    headers: ticket.headers,
+    body: Readable.toWeb(createReadStream(path)) as unknown as BodyInit,
+    duplex: "half",
   } as RequestInit & { duplex: "half" });
   if (!put.ok) throw new Error(`The upload failed (storage answered ${put.status}).`);
-  return callTool<{ id: string; kind: string; reused: boolean }>(remote, "finish_upload", { upload_id: ticket.upload_id, filename });
+  return callTool<{ id: string; kind: string; reused: boolean }>(remote, "finish_upload", {
+    upload_id: ticket.upload_id,
+    filename,
+  });
 }

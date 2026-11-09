@@ -13,10 +13,15 @@ import { remoteClient, ToolError, uploadFile } from "./remote.js";
    directory handed an AI app whatever folder it happened to start in, often
    the home folder. A home folder or a drive root is refused for the same
    reason. */
-const UPLOAD_ROOT = process.env.RONANA_MCP_UPLOAD_ROOT ? resolve(process.env.RONANA_MCP_UPLOAD_ROOT) : null;
+const UPLOAD_ROOT = process.env.RONANA_MCP_UPLOAD_ROOT
+  ? resolve(process.env.RONANA_MCP_UPLOAD_ROOT)
+  : null;
 
 async function resolveInsideRoot(inputPath: string): Promise<string> {
-  if (!UPLOAD_ROOT) throw new Error("Local uploads are off. Set RONANA_MCP_UPLOAD_ROOT to the folder that holds your media.");
+  if (!UPLOAD_ROOT)
+    throw new Error(
+      "Local uploads are off. Set RONANA_MCP_UPLOAD_ROOT to the folder that holds your media.",
+    );
   const root = await realpath(UPLOAD_ROOT).catch(() => {
     throw new Error(`RONANA_MCP_UPLOAD_ROOT (${UPLOAD_ROOT}) does not exist.`);
   });
@@ -24,14 +29,23 @@ async function resolveInsideRoot(inputPath: string): Promise<string> {
   // or a drive root) would expose every file in it.
   const home = await realpath(homedir()).catch(() => homedir());
   const homeFromRoot = relative(root, home);
-  if (root === parse(root).root || homeFromRoot === "" || !(homeFromRoot.startsWith("..") || isAbsolute(homeFromRoot))) {
-    throw new Error("RONANA_MCP_UPLOAD_ROOT must be a media folder, not a home folder, a folder that contains one, or a drive root.");
+  if (
+    root === parse(root).root ||
+    homeFromRoot === "" ||
+    !(homeFromRoot.startsWith("..") || isAbsolute(homeFromRoot))
+  ) {
+    throw new Error(
+      "RONANA_MCP_UPLOAD_ROOT must be a media folder, not a home folder, a folder that contains one, or a drive root.",
+    );
   }
-  const candidate = await realpath(isAbsolute(inputPath) ? inputPath : resolve(root, inputPath)).catch(() => {
+  const candidate = await realpath(
+    isAbsolute(inputPath) ? inputPath : resolve(root, inputPath),
+  ).catch(() => {
     throw new Error(`No file at ${inputPath} in RONANA_MCP_UPLOAD_ROOT.`);
   });
   const rel = relative(root, candidate);
-  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error("The path is outside RONANA_MCP_UPLOAD_ROOT.");
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
+    throw new Error("The path is outside RONANA_MCP_UPLOAD_ROOT.");
   return candidate;
 }
 
@@ -51,38 +65,62 @@ async function serve() {
       ...(icons ? { icons } : {}),
     });
     for (const tool of tools) {
-      server.registerTool(tool.name, {
-        title: tool.title,
-        description: tool.description,
-        inputSchema: fromJsonSchema(tool.inputSchema as any),
-        outputSchema: tool.outputSchema ? fromJsonSchema(tool.outputSchema as any) : undefined,
-        annotations: tool.annotations,
-        ...(tool.icons ? { icons: tool.icons } : {}),
-      }, async (args) => remote.callTool({
-        name: tool.name,
-        arguments: args as Record<string, unknown>,
-      }));
+      server.registerTool(
+        tool.name,
+        {
+          title: tool.title,
+          description: tool.description,
+          inputSchema: fromJsonSchema(tool.inputSchema as any),
+          outputSchema: tool.outputSchema ? fromJsonSchema(tool.outputSchema as any) : undefined,
+          annotations: tool.annotations,
+          ...(tool.icons ? { icons: tool.icons } : {}),
+        },
+        async (args) =>
+          remote.callTool({
+            name: tool.name,
+            arguments: args as Record<string, unknown>,
+          }),
+      );
     }
-    server.registerTool("upload_local_reference", {
-      description: UPLOAD_ROOT
-        ? `Upload a local file below ${UPLOAD_ROOT} to the account library.`
-        : "Upload a local file to the account library. Off until RONANA_MCP_UPLOAD_ROOT names a media folder.",
-      inputSchema: z.object({ path: z.string() }),
-      annotations: { readOnlyHint: false, destructiveHint: false },
-      ...(icons ? { icons } : {}),
-    }, async ({ path }) => {
-      try {
-        const safePath = await resolveInsideRoot(path);
-        if (!(await stat(safePath)).isFile()) throw new Error("The path is not a file.");
-        const body = { ok: true, data: await uploadFile(remote, safePath) };
-        return { content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body };
-      } catch (error) {
-        // A server refusal keeps its own code; a local problem gets ours.
-        const body = { ok: false, error: error instanceof ToolError ? error.error
-          : { code: "LOCAL_UPLOAD_REJECTED", message: error instanceof Error ? error.message : "The upload failed." } };
-        return { isError: true, content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body };
-      }
-    });
+    server.registerTool(
+      "upload_local_reference",
+      {
+        description: UPLOAD_ROOT
+          ? `Upload a local file below ${UPLOAD_ROOT} to the account library.`
+          : "Upload a local file to the account library. Off until RONANA_MCP_UPLOAD_ROOT names a media folder.",
+        inputSchema: z.object({ path: z.string() }),
+        annotations: { readOnlyHint: false, destructiveHint: false },
+        ...(icons ? { icons } : {}),
+      },
+      async ({ path }) => {
+        try {
+          const safePath = await resolveInsideRoot(path);
+          if (!(await stat(safePath)).isFile()) throw new Error("The path is not a file.");
+          const body = { ok: true, data: await uploadFile(remote, safePath) };
+          return {
+            content: [{ type: "text", text: JSON.stringify(body) }],
+            structuredContent: body,
+          };
+        } catch (error) {
+          // A server refusal keeps its own code; a local problem gets ours.
+          const body = {
+            ok: false,
+            error:
+              error instanceof ToolError
+                ? error.error
+                : {
+                    code: "LOCAL_UPLOAD_REJECTED",
+                    message: error instanceof Error ? error.message : "The upload failed.",
+                  },
+          };
+          return {
+            isError: true,
+            content: [{ type: "text", text: JSON.stringify(body) }],
+            structuredContent: body,
+          };
+        }
+      },
+    );
     return server;
   });
 }
@@ -101,7 +139,9 @@ async function main() {
   }
   if (command === "status") {
     const credentials = readCredentials();
-    process.stdout.write(credentials ? `Signed in to ${credentials.baseUrl}.\n` : "Not signed in.\n");
+    process.stdout.write(
+      credentials ? `Signed in to ${credentials.baseUrl}.\n` : "Not signed in.\n",
+    );
     return;
   }
   if (command === "serve") {

@@ -9,7 +9,11 @@ import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { stateDir } from "./paths.js";
 
-export interface ListenerLock { pid: number; background: boolean; kind?: "listen" | "next" }
+export interface ListenerLock {
+  pid: number;
+  background: boolean;
+  kind?: "listen" | "next";
+}
 
 const lockPath = () => join(stateDir(), "listen.pid");
 
@@ -21,25 +25,47 @@ export function parseLock(text: string): ListenerLock | null {
   try {
     const value = JSON.parse(trimmed) as Partial<ListenerLock>;
     if (!Number.isInteger(value.pid) || (value.pid as number) <= 0) return null;
-    return { pid: value.pid as number, background: value.background === true, ...(value.kind === "listen" || value.kind === "next" ? { kind: value.kind } : {}) };
-  } catch { return null; }
+    return {
+      pid: value.pid as number,
+      background: value.background === true,
+      ...(value.kind === "listen" || value.kind === "next" ? { kind: value.kind } : {}),
+    };
+  } catch {
+    return null;
+  }
 }
 
 const readLock = (): { text: string; lock: ListenerLock | null } | null => {
-  try { const text = readFileSync(lockPath(), "utf8"); return { text, lock: parseLock(text) }; } catch { return null; }
+  try {
+    const text = readFileSync(lockPath(), "utf8");
+    return { text, lock: parseLock(text) };
+  } catch {
+    return null;
+  }
 };
 
 /** Is that process still running, and still node? A reused process number
  *  (Windows reuses them readily) must never get an unrelated program killed. */
 function alive(pid: number): boolean {
-  try { process.kill(pid, 0); } catch { return false; }
-  const node = basename(process.execPath).toLowerCase().replace(/\.exe$/, "");
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  const node = basename(process.execPath)
+    .toLowerCase()
+    .replace(/\.exe$/, "");
   try {
     if (process.platform === "win32") {
-      const row = execFileSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8", windowsHide: true });
+      const row = execFileSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], {
+        encoding: "utf8",
+        windowsHide: true,
+      });
       return row.toLowerCase().includes(`"${node}.exe"`);
     }
-    return execFileSync("ps", ["-p", String(pid), "-o", "comm="], { encoding: "utf8" }).toLowerCase().includes(node);
+    return execFileSync("ps", ["-p", String(pid), "-o", "comm="], { encoding: "utf8" })
+      .toLowerCase()
+      .includes(node);
   } catch {
     // No tasklist / ps to ask: trust the signal check on POSIX, not on Windows.
     return process.platform !== "win32";
@@ -50,9 +76,21 @@ function alive(pid: number): boolean {
  *  and killing the listener alone would leave the AI running. */
 export function killTree(pid: number): void {
   if (process.platform === "win32") {
-    try { execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }); return; } catch { /* fall through */ }
+    try {
+      execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      return;
+    } catch {
+      /* fall through */
+    }
   }
-  try { process.kill(pid); } catch { /* already gone */ }
+  try {
+    process.kill(pid);
+  } catch {
+    /* already gone */
+  }
 }
 
 /** The listener running on this computer, other than this process. */
@@ -66,7 +104,12 @@ export function runningListener(): ListenerLock | null {
 export function stopListener(lock: ListenerLock): void {
   killTree(lock.pid);
   const current = readLock();
-  if (current?.lock?.pid === lock.pid) try { unlinkSync(lockPath()); } catch { /* already gone */ }
+  if (current?.lock?.pid === lock.pid)
+    try {
+      unlinkSync(lockPath());
+    } catch {
+      /* already gone */
+    }
 }
 
 /** Does this process still hold the lock (no other process has taken it)? A
@@ -85,7 +128,11 @@ export function holdsListenerLock(): boolean {
  *  An old terminal listener holding it is stopped (`stopped`). */
 export function claimListener(): { stopped: ListenerLock | null } {
   mkdirSync(stateDir(), { recursive: true });
-  const record = JSON.stringify({ pid: process.pid, background: false, kind: "next" } satisfies ListenerLock);
+  const record = JSON.stringify({
+    pid: process.pid,
+    background: false,
+    kind: "next",
+  } satisfies ListenerLock);
   let stopped: ListenerLock | null = null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
@@ -93,7 +140,12 @@ export function claimListener(): { stopped: ListenerLock | null } {
       // Let it go on exit. A process killed outright leaves its lock behind;
       // the next listener sees it is not running and replaces it.
       process.once("exit", () => {
-        if (readLock()?.lock?.pid === process.pid) try { unlinkSync(lockPath()); } catch { /* already gone */ }
+        if (readLock()?.lock?.pid === process.pid)
+          try {
+            unlinkSync(lockPath());
+          } catch {
+            /* already gone */
+          }
       });
       return { stopped };
     } catch (error) {
@@ -110,7 +162,12 @@ export function claimListener(): { stopped: ListenerLock | null } {
     // Remove the stale lock only if it is still the one just read, so a
     // listener that claimed it in between keeps it (and wins the next round).
     const now = readLock();
-    if (now && now.text === held?.text) try { unlinkSync(lockPath()); } catch { /* someone else did */ }
+    if (now && now.text === held?.text)
+      try {
+        unlinkSync(lockPath());
+      } catch {
+        /* someone else did */
+      }
   }
   throw new Error("Another Ronana loop keeps starting on this computer. Stop it, then try again.");
 }

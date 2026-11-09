@@ -26,7 +26,11 @@ const entry = () => new Entry(SERVICE, ACCOUNT);
 export function readCredentials(): StoredCredentials | null {
   const value = entry().getPassword();
   if (!value) return null;
-  try { return JSON.parse(value) as StoredCredentials; } catch { return null; }
+  try {
+    return JSON.parse(value) as StoredCredentials;
+  } catch {
+    return null;
+  }
 }
 
 function writeCredentials(value: StoredCredentials) {
@@ -46,12 +50,19 @@ async function revoke(credentials: StoredCredentials) {
 export async function logout() {
   const current = readCredentials();
   if (current) await revoke(current);
-  try { entry().deletePassword(); } catch { /* No stored credential. */ }
+  try {
+    entry().deletePassword();
+  } catch {
+    /* No stored credential. */
+  }
 }
 
 function openBrowser(url: string) {
   if (process.platform === "win32") {
-    spawn("rundll32", ["url.dll,FileProtocolHandler", url], { detached: true, stdio: "ignore" }).unref();
+    spawn("rundll32", ["url.dll,FileProtocolHandler", url], {
+      detached: true,
+      stdio: "ignore",
+    }).unref();
   } else if (process.platform === "darwin") {
     spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
   } else {
@@ -65,24 +76,46 @@ async function tokenRequest(baseUrl: string, fields: Record<string, string>) {
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(fields),
   });
-  const body = await response.json() as Record<string, unknown>;
-  if (!response.ok) throw new Error(String(body.error_description ?? body.error ?? "OAuth token request failed."));
+  const body = (await response.json()) as Record<string, unknown>;
+  if (!response.ok)
+    throw new Error(String(body.error_description ?? body.error ?? "OAuth token request failed."));
   return body;
 }
 
-export async function login(baseUrl = process.env.RONANA_BASE_URL ?? "https://ronana.ai", openInBrowser = true) {
+export async function login(
+  baseUrl = process.env.RONANA_BASE_URL ?? "https://ronana.ai",
+  openInBrowser = true,
+) {
   baseUrl = baseUrl.replace(/\/$/, "");
-  const parsed = (() => { try { return new URL(baseUrl); } catch { return null; } })();
-  if (!parsed || !/^https?:$/.test(parsed.protocol)) throw new Error("--base-url must be a web address, like https://ronana.ai.");
+  const parsed = (() => {
+    try {
+      return new URL(baseUrl);
+    } catch {
+      return null;
+    }
+  })();
+  if (!parsed || !/^https?:$/.test(parsed.protocol))
+    throw new Error("--base-url must be a web address, like https://ronana.ai.");
   const verifier = randomBytes(32).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
   const state = randomBytes(24).toString("base64url");
 
-  const callback = await new Promise<{ redirectUri: string; code: Promise<string>; finish: (text: string) => void; close: () => void }>((resolve, reject) => {
+  const callback = await new Promise<{
+    redirectUri: string;
+    code: Promise<string>;
+    finish: (text: string) => void;
+    close: () => void;
+  }>((resolve, reject) => {
     let settle!: (code: string) => void;
     let fail!: (error: Error) => void;
-    const code = new Promise<string>((ok, no) => { settle = ok; fail = no; });
-    const timer = setTimeout(() => fail(new Error("Sign-in timed out. Run `ronana auth login` again.")), LOGIN_TIMEOUT_MS);
+    const code = new Promise<string>((ok, no) => {
+      settle = ok;
+      fail = no;
+    });
+    const timer = setTimeout(
+      () => fail(new Error("Sign-in timed out. Run `ronana auth login` again.")),
+      LOGIN_TIMEOUT_MS,
+    );
     /* The browser tab waits on this response until the code has been traded
        for tokens, so it only says "connected" once that is true. */
     let held: ServerResponse | null = null;
@@ -107,17 +140,27 @@ export async function login(baseUrl = process.env.RONANA_BASE_URL ?? "https://ro
       }
       answered = true;
       if (url.searchParams.get("error")) {
-        res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" }).end("Authorization was not completed.");
-        fail(new Error(url.searchParams.get("error_description") ?? url.searchParams.get("error")!));
+        res
+          .writeHead(400, { "Content-Type": "text/plain; charset=utf-8" })
+          .end("Authorization was not completed.");
+        fail(
+          new Error(url.searchParams.get("error_description") ?? url.searchParams.get("error")!),
+        );
         return;
       }
       held = res;
       settle(url.searchParams.get("code") ?? "");
     });
-    server.once("error", (error) => { clearTimeout(timer); reject(error); });
+    server.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
     server.listen(0, "127.0.0.1", () => {
       const address = server.address();
-      if (!address || typeof address === "string") { close(); return reject(new Error("Loopback callback failed.")); }
+      if (!address || typeof address === "string") {
+        close();
+        return reject(new Error("Loopback callback failed."));
+      }
       resolve({ redirectUri: `http://127.0.0.1:${address.port}/callback`, code, finish, close });
     });
   });
@@ -135,11 +178,14 @@ export async function login(baseUrl = process.env.RONANA_BASE_URL ?? "https://ro
         response_types: ["code"],
         scope: SCOPES,
       }),
-    }).catch(() => { throw new Error(`Could not reach ${baseUrl}. Check --base-url and your connection.`); });
-    const registered = await registration.json().catch(() => {
+    }).catch(() => {
+      throw new Error(`Could not reach ${baseUrl}. Check --base-url and your connection.`);
+    });
+    const registered = (await registration.json().catch(() => {
       throw new Error(`No Ronana sign-in at ${baseUrl}. Check --base-url.`);
-    }) as Record<string, unknown>;
-    if (!registration.ok || typeof registered.client_id !== "string") throw new Error("OAuth client registration failed.");
+    })) as Record<string, unknown>;
+    if (!registration.ok || typeof registered.client_id !== "string")
+      throw new Error("OAuth client registration failed.");
 
     const authorize = new URL(`${baseUrl}/api/auth/oauth2/authorize`);
     authorize.search = new URLSearchParams({
@@ -152,7 +198,8 @@ export async function login(baseUrl = process.env.RONANA_BASE_URL ?? "https://ro
       code_challenge_method: "S256",
       state,
     }).toString();
-    process.stderr.write(`${openInBrowser ? "Opening your browser to sign in. If it does not open, visit" : "Open this link to sign in"}:
+    process.stderr
+      .write(`${openInBrowser ? "Opening your browser to sign in. If it does not open, visit" : "Open this link to sign in"}:
 ${authorize}
 `);
     if (openInBrowser) openBrowser(authorize.toString());
@@ -165,7 +212,8 @@ ${authorize}
       code_verifier: verifier,
       resource: `${baseUrl}/mcp`,
     });
-    if (typeof tokens.access_token !== "string" || typeof tokens.refresh_token !== "string") throw new Error("OAuth response did not contain tokens.");
+    if (typeof tokens.access_token !== "string" || typeof tokens.refresh_token !== "string")
+      throw new Error("OAuth response did not contain tokens.");
     // Signing in again replaces the stored sign-in; end the old one too, or
     // every login leaves another connection behind on the account.
     const previous = readCredentials();
@@ -192,23 +240,37 @@ const fresh = (c: StoredCredentials) => c.expiresAt > Date.now() + 60_000;
 async function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
   const lock = join(tmpdir(), "ronana-oauth-refresh.lock");
   let held = false;
-  for (const deadline = Date.now() + 15_000; ;) {
+  for (const deadline = Date.now() + 15_000; ; ) {
     try {
       closeSync(openSync(lock, "wx"));
       held = true;
       break;
     } catch {
       // A crashed holder leaves the file behind; a refresh never takes 30s.
-      try { if (Date.now() - statSync(lock).mtimeMs > 30_000) unlinkSync(lock); } catch { /* Gone already. */ }
+      try {
+        if (Date.now() - statSync(lock).mtimeMs > 30_000) unlinkSync(lock);
+      } catch {
+        /* Gone already. */
+      }
       if (Date.now() > deadline) break; // Proceed unlocked rather than hang.
       await new Promise((r) => setTimeout(r, 100));
     }
   }
-  try { return await fn(); } finally { if (held) try { unlinkSync(lock); } catch { /* Gone already. */ } }
+  try {
+    return await fn();
+  } finally {
+    if (held)
+      try {
+        unlinkSync(lock);
+      } catch {
+        /* Gone already. */
+      }
+  }
 }
 
 /** What a user reads when the stored sign-in no longer works on the server. */
-export const SIGN_IN_ENDED = "Your Ronana sign-in has ended (disconnected or expired). Run `ronana auth login` again.";
+export const SIGN_IN_ENDED =
+  "Your Ronana sign-in has ended (disconnected or expired). Run `ronana auth login` again.";
 /** What a user reads when nothing is signed in on this computer. */
 export const NOT_SIGNED_IN = "Not signed in. Run `ronana auth login` first.";
 
@@ -233,7 +295,8 @@ export async function accessToken(): Promise<string> {
       // A login in another process replaces the stored sign-in and revokes the
       // one we were refreshing: carry on with the new one instead.
       const replaced = readCredentials();
-      if (replaced && replaced.clientId !== current.clientId && fresh(replaced)) return { replaced: replaced.accessToken };
+      if (replaced && replaced.clientId !== current.clientId && fresh(replaced))
+        return { replaced: replaced.accessToken };
       throw new Error(SIGN_IN_ENDED);
     });
     if (typeof tokens.replaced === "string") return tokens.replaced;
@@ -241,7 +304,8 @@ export async function accessToken(): Promise<string> {
     const next = {
       ...current,
       accessToken: tokens.access_token,
-      refreshToken: typeof tokens.refresh_token === "string" ? tokens.refresh_token : current.refreshToken,
+      refreshToken:
+        typeof tokens.refresh_token === "string" ? tokens.refresh_token : current.refreshToken,
       expiresAt: Date.now() + Number(tokens.expires_in ?? 900) * 1000,
     };
     writeCredentials(next);

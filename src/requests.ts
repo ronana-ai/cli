@@ -9,7 +9,14 @@
 // They are temporary: the sweep removes them a day later.
 
 import { randomUUID } from "node:crypto";
-import { createWriteStream, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  createWriteStream,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { extname, join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -28,7 +35,11 @@ export interface RequestReference {
   target?: unknown;
 }
 
-export interface RequestProject { label: string; body: string; hash: string }
+export interface RequestProject {
+  label: string;
+  body: string;
+  hash: string;
+}
 
 interface Common {
   id: string;
@@ -37,28 +48,45 @@ interface Common {
   keep_alive?: string;
 }
 export interface EnhanceRequest extends Common {
-  kind: "enhance"; model: { id: string; name: string };
-  draft: string; brief?: string; guide: string; max_chars: number; project?: RequestProject;
+  kind: "enhance";
+  model: { id: string; name: string };
+  draft: string;
+  brief?: string;
+  guide: string;
+  max_chars: number;
+  project?: RequestProject;
 }
 export interface AssistantRequest extends Common {
-  kind: "assistant"; model: { id: string; name: string };
-  message: string; draft?: string; guide: string; max_chars: number; project?: RequestProject;
+  kind: "assistant";
+  model: { id: string; name: string };
+  message: string;
+  draft?: string;
+  guide: string;
+  max_chars: number;
+  project?: RequestProject;
 }
 export interface AgentRequest extends Common {
-  kind: "agent"; messages: { role: string; content: string }[];
-  context?: string; approval_mode: string; max_cards: number; card_schema: unknown;
+  kind: "agent";
+  messages: { role: string; content: string }[];
+  context?: string;
+  approval_mode: string;
+  max_cards: number;
+  card_schema: unknown;
   tools?: { name: string; description?: string; input_schema?: unknown }[];
 }
 export type StudioRequest = EnhanceRequest | AssistantRequest | AgentRequest;
 
 /** The user's latest message on an agent board. */
-export const lastUserMessage = (request: AgentRequest) => request.messages.filter((m) => m.role === "user").at(-1)?.content ?? "";
+export const lastUserMessage = (request: AgentRequest) =>
+  request.messages.filter((m) => m.role === "user").at(-1)?.content ?? "";
 
 /** What a reply holds for each kind, as the chat is shown it. */
 export const REPLY_SHAPE: Record<StudioRequest["kind"], string> = {
   enhance: '{"prompt": "the rewritten prompt"}',
-  assistant: '{"message": "your answer", "prompt": "a prompt for their composer, only if your answer has one"}',
-  agent: '{"message": "what the user reads on their board", "cards": [ ...cards following card_schema in the request file ]}',
+  assistant:
+    '{"message": "your answer", "prompt": "a prompt for their composer, only if your answer has one"}',
+  agent:
+    '{"message": "what the user reads on their board", "cards": [ ...cards following card_schema in the request file ]}',
 };
 
 /* ── waiting ────────────────────────────────────────────────────────────── */
@@ -66,8 +94,15 @@ export const REPLY_SHAPE: Record<StudioRequest["kind"], string> = {
 /** A failure that retrying cannot fix: the sign-in ended, or the plan has no
  *  connected tools. Everything else (offline, a server hiccup) is retried. */
 export function isFatal(error: unknown): boolean {
-  if (error instanceof ToolError) return error.error.code === "SCOPE_REQUIRED" || error.error.code === "UNAUTHORIZED" || error.error.code === "UPGRADE_REQUIRED";
-  return error instanceof Error && /sign.?in|401|pricing|no ronana mcp endpoint/i.test(error.message);
+  if (error instanceof ToolError)
+    return (
+      error.error.code === "SCOPE_REQUIRED" ||
+      error.error.code === "UNAUTHORIZED" ||
+      error.error.code === "UPGRADE_REQUIRED"
+    );
+  return (
+    error instanceof Error && /sign.?in|401|pricing|no ronana mcp endpoint/i.test(error.message)
+  );
 }
 
 /** The least time between two empty waits: the server answers at once (not
@@ -78,15 +113,25 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** One chat loop's session, as the server tells loops apart. ONE listens per
  *  account: a new id takes over and the older one stops; a loop stops after 15
  *  quiet minutes. `mode` is what the server expects on the wire. */
-export interface ListenerSession { id: string; mode: "next"; chatSession?: string }
+export interface ListenerSession {
+  id: string;
+  mode: "next";
+  chatSession?: string;
+}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** A fresh session for this process. A chat loop names its Claude Code chat
  *  (when it runs in one), so the studio can reopen that same chat later. */
-export function listenerSession(env: Record<string, string | undefined> = process.env): ListenerSession {
+export function listenerSession(
+  env: Record<string, string | undefined> = process.env,
+): ListenerSession {
   const chat = env.CLAUDE_CODE_SESSION_ID;
-  return { id: randomUUID(), mode: "next", ...(chat && UUID.test(chat) ? { chatSession: chat } : {}) };
+  return {
+    id: randomUUID(),
+    mode: "next",
+    ...(chat && UUID.test(chat) ? { chatSession: chat } : {}),
+  };
 }
 
 /** Connect, retrying while the network is not there yet. */
@@ -96,7 +141,9 @@ export async function connectWithRetry(log: (line: string) => void): Promise<Rem
       return await remoteClient();
     } catch (error) {
       if (isFatal(error)) throw error;
-      log(`Can't reach Ronana yet (${error instanceof Error ? error.message : String(error)}). Retrying in ${backoff / 1000}s.`);
+      log(
+        `Can't reach Ronana yet (${error instanceof Error ? error.message : String(error)}). Retrying in ${backoff / 1000}s.`,
+      );
       await new Promise((resolve) => setTimeout(resolve, backoff));
     }
   }
@@ -106,27 +153,48 @@ export async function connectWithRetry(log: (line: string) => void): Promise<Rem
  *  chat loop had no request for 15 minutes (`idle`). It never restarts itself. */
 export class ListenerStopped extends Error {
   constructor(readonly reason: "replaced" | "idle") {
-    super(reason === "idle" ? "Listening stopped: no requests for 15 minutes." : "Listening stopped: another app or computer took over listening for this account.");
+    super(
+      reason === "idle"
+        ? "Listening stopped: no requests for 15 minutes."
+        : "Listening stopped: another app or computer took over listening for this account.",
+    );
   }
 }
 
 /** A newer CLI the server knows of, and the command that installs it. */
-export interface CliUpdate { latest: string; command: string }
+export interface CliUpdate {
+  latest: string;
+  command: string;
+}
 
 /** Hold `wait_for_requests` until a request arrives. A dropped connection is
  *  retried with backoff (reported through `onRetry`); a fatal one throws, and
  *  a stop throws ListenerStopped. Also returns the newest CLI the server
  *  reported, when this one is older. */
-export async function waitForRequest(remote: Remote, app: string, session: ListenerSession, onRetry?: (error: unknown, waitMs: number) => void): Promise<{ request: StudioRequest; update: CliUpdate | null }> {
+export async function waitForRequest(
+  remote: Remote,
+  app: string,
+  session: ListenerSession,
+  onRetry?: (error: unknown, waitMs: number) => void,
+): Promise<{ request: StudioRequest; update: CliUpdate | null }> {
   let backoff = 0;
   let update: CliUpdate | null = null;
-  const args = { app, listener_id: session.id, mode: session.mode, cli_version: CLI_VERSION, ...(session.chatSession ? { chat_session: session.chatSession } : {}) };
+  const args = {
+    app,
+    listener_id: session.id,
+    mode: session.mode,
+    cli_version: CLI_VERSION,
+    ...(session.chatSession ? { chat_session: session.chatSession } : {}),
+  };
   for (;;) {
     const asked = Date.now();
     let request: StudioRequest | null;
     try {
       let reported: CliUpdate | undefined;
-      ({ request, update: reported } = await callTool<{ request: StudioRequest | null; update?: CliUpdate }>(remote, "wait_for_requests", args));
+      ({ request, update: reported } = await callTool<{
+        request: StudioRequest | null;
+        update?: CliUpdate;
+      }>(remote, "wait_for_requests", args));
       update = reported ?? null;
       backoff = 0;
     } catch (error) {
@@ -151,30 +219,56 @@ export const KEEP_FILES_MS = 24 * 60 * 60 * 1000;
 /** A downloaded reference larger than this is skipped (the AI keeps its link). */
 export const MAX_REFERENCE_BYTES = 512 * 1024 * 1024;
 
-export const safeName = (value: string) => value.replace(/[^\w.-]+/g, "_").replace(/^\.+/, "_").slice(0, 120) || "_";
+export const safeName = (value: string) =>
+  value
+    .replace(/[^\w.-]+/g, "_")
+    .replace(/^\.+/, "_")
+    .slice(0, 120) || "_";
 
 /** Remove what is older than a day. One entry that can't be removed (in use,
  *  no permission) never stops the rest. */
 export function sweep(dir: string, now = Date.now()): void {
   let names: string[];
-  try { names = readdirSync(dir); } catch { return; }
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
   for (const name of names) {
     try {
       const path = join(dir, name);
-      if (now - statSync(path).mtimeMs > KEEP_FILES_MS) rmSync(path, { recursive: true, force: true });
-    } catch { /* keep going */ }
+      if (now - statSync(path).mtimeMs > KEEP_FILES_MS)
+        rmSync(path, { recursive: true, force: true });
+    } catch {
+      /* keep going */
+    }
   }
 }
 
 const EXT_BY_TYPE: Record<string, string> = {
-  "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif", "image/avif": ".avif", "image/heic": ".heic",
-  "video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov",
-  "audio/mpeg": ".mp3", "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/mp4": ".m4a", "audio/ogg": ".ogg",
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+  "image/avif": ".avif",
+  "image/heic": ".heic",
+  "video/mp4": ".mp4",
+  "video/webm": ".webm",
+  "video/quicktime": ".mov",
+  "audio/mpeg": ".mp3",
+  "audio/wav": ".wav",
+  "audio/x-wav": ".wav",
+  "audio/mp4": ".m4a",
+  "audio/ogg": ".ogg",
 };
 
 /** Download one reference into `dir`. Only https, capped in size; a failure
  *  leaves no partial file and returns null (the AI still has the link). */
-export async function downloadReference(reference: RequestReference, dir: string, fetchImpl: typeof fetch = fetch): Promise<string | null> {
+export async function downloadReference(
+  reference: RequestReference,
+  dir: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string | null> {
   if (!reference.url || !/^https:\/\//i.test(reference.url)) return null;
   let file = "";
   try {
@@ -197,7 +291,12 @@ export async function downloadReference(reference: RequestReference, dir: string
     await pipeline(Readable.fromWeb(response.body as never), cap, createWriteStream(file));
     return file;
   } catch {
-    if (file) try { rmSync(file, { force: true }); } catch { /* ignore */ }
+    if (file)
+      try {
+        rmSync(file, { force: true });
+      } catch {
+        /* ignore */
+      }
     return null;
   }
 }
@@ -214,11 +313,19 @@ export interface RequestFiles {
 }
 
 /** Write a request's files into `dir` (sweeping old ones first). */
-export async function saveRequestFiles(dir: string, request: StudioRequest, extra: Record<string, unknown> = {}, fetchImpl: typeof fetch = fetch): Promise<RequestFiles> {
+export async function saveRequestFiles(
+  dir: string,
+  request: StudioRequest,
+  extra: Record<string, unknown> = {},
+  fetchImpl: typeof fetch = fetch,
+): Promise<RequestFiles> {
   mkdirSync(dir, { recursive: true });
   sweep(dir);
   const id = safeName(request.id);
-  const { guide, project, ...rest } = request as StudioRequest & { guide?: string; project?: RequestProject };
+  const { guide, project, ...rest } = request as StudioRequest & {
+    guide?: string;
+    project?: RequestProject;
+  };
   const files: RequestFiles = { request: join(dir, `${id}.json`), references: [] };
   if (guide && "model" in request) {
     files.guide = join(dir, `guide-${safeName(request.model.id)}.md`);
@@ -232,17 +339,25 @@ export async function saveRequestFiles(dir: string, request: StudioRequest, extr
   for (const reference of request.references ?? []) {
     const file = await downloadReference(reference, join(dir, id), fetchImpl);
     files.references.push({
-      label: reference.label, kind: reference.kind,
+      label: reference.label,
+      kind: reference.kind,
       ...(file ? { file } : reference.url ? { url: reference.url } : {}),
       ...(reference.duration_s != null ? { duration_s: reference.duration_s } : {}),
     });
   }
-  writeFileSync(files.request, JSON.stringify({
-    ...rest,
-    ...(project ? { project: { label: project.label, file: files.project } } : {}),
-    references: files.references,
-    ...extra,
-  }, null, 2));
+  writeFileSync(
+    files.request,
+    JSON.stringify(
+      {
+        ...rest,
+        ...(project ? { project: { label: project.label, file: files.project } } : {}),
+        references: files.references,
+        ...extra,
+      },
+      null,
+      2,
+    ),
+  );
   return files;
 }
 
