@@ -19,6 +19,8 @@ const BOOLEAN_FLAGS = new Set([
   "on_startup",
   "off_startup",
   "background",
+  "favorites",
+  "all",
 ]);
 /** CLI options that are meaningless without a value. A model's own fields stay
  *  lenient, since a bare `--sound` means true. */
@@ -38,6 +40,8 @@ const VALUE_FLAGS = new Set([
   "with",
   "command",
   "resolution",
+  "folder",
+  "source",
 ]);
 
 export function parseArgs(argv: string[]): Args {
@@ -74,6 +78,31 @@ const takeFlag = (args: Args, name: string) => {
   args.flags.delete(name);
   return v;
 };
+
+/** `ronana library` / `ronana folder items` flags → list_library's input.
+ *  `folder` may also come positionally (`folder items <name>`). */
+export function libraryInput(args: Args, folder?: string): Record<string, unknown> {
+  const kind = flag(args, "kind") ?? "all";
+  if (!["all", "images", "videos", "audio"].includes(kind))
+    throw new Error("--kind is images, videos or audio.");
+  const source = flag(args, "source") ?? "all";
+  if (!["all", "uploads", "generated"].includes(source))
+    throw new Error("--source is uploads or generated.");
+  const rawLimit = flag(args, "limit");
+  const limit = rawLimit === undefined ? 50 : Number(rawLimit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100)
+    throw new Error("--limit is a whole number from 1 to 100.");
+  const name = (folder ?? flag(args, "folder"))?.trim();
+  if (name !== undefined && (name.length === 0 || name.length > 60))
+    throw new Error("A folder is a name or id of 1 to 60 characters.");
+  return {
+    ...(name ? { folder: name } : {}),
+    kind,
+    source,
+    favorites: has(args, "favorites"),
+    limit,
+  };
+}
 
 export interface JsonSchema {
   type?: string | string[];

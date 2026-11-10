@@ -101,7 +101,7 @@ export function describeStop(
 ): string {
   const why =
     stop.reason === "idle"
-      ? "Listening for the Ronana studio stopped: no requests came in for 15 minutes."
+      ? "Listening for the Ronana studio stopped: no requests came in for 10 minutes."
       : stop.reason === "new-chat"
         ? "Listening for the Ronana studio stopped: a newer chat on this computer started listening, and only one listens at a time."
         : "Listening for the Ronana studio stopped: another app or computer started listening for this account, and only one listens at a time.";

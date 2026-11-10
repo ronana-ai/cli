@@ -1,6 +1,6 @@
 {
   "name": "@ronana/mcp",
-  "version": "0.4.9",
+  "version": "0.4.10",
   "description": "Ronana command line and local MCP bridge.",
   "license": "MIT",
   "homepage": "https://ronana.ai",
@@ -44,8 +44,8 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
-    "typescript": "^5",
-    "tsx": "^4"
+    "tsx": "^4",
+    "typescript": "^5"
   },
   "engines": {
     "node": ">=20"

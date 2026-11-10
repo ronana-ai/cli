@@ -38,7 +38,8 @@ ronana generate create google/nano-banana-2-lite/edit --prompt "make it dusk" --
 ronana generate get <id> | wait <id> [--out dir]
 ronana generate list
 ronana upscale <id | file | url> --resolution 4k --out ./renders
-ronana folder list | add <folder> <id…>
+ronana folder list | items <folder> | add <folder> <id…>
+ronana library --folder "<name>" --kind images --all   # ids to use in generate
 ronana next [--app "name"]
 ronana reply <id> --file <reply.json | ->
 ronana --version
@@ -155,6 +156,7 @@ library.
 | `create_upload` | Get a private upload link for a larger local file (up to 200 MB). |
 | `finish_upload` | Add a file uploaded with `create_upload` to the library. |
 | `list_folders` | List the folders in the library. |
+| `list_library` | List library items, newest first: one folder, one kind, uploads or generated. Each id works in `generate`. |
 | `add_to_folder` | File library items into a folder. |
 | `get_account` | Get the signed-in account's email, plan and credit balance. |
 | `wait_for_requests` | Wait for Enhance, assistant and agent work from the studio. While an app calls it, the studio lists it as listening. |

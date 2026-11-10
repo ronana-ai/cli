@@ -41,6 +41,7 @@ import {
   flag,
   has,
   isRemoteValue,
+  libraryInput,
   parseArgs,
   readJsonArg,
   replaceLocalMedia,
@@ -69,7 +70,11 @@ const HELP = `Usage: ronana <command>
   generate list                 Recent generations (--limit n)
   upscale <id|file|url>         Upscale a video (costs credits; --resolution, --model)
   folder list                   Your library folders (alias: folders)
+  folder items <folder>         What is in a folder: ids to use in generate
   folder add <folder> <id…>     File items into a folder (made if missing)
+  library                       Your library, newest first (--folder <name|id>,
+                                --kind images|videos|audio, --source uploads|generated,
+                                --favorites, --limit 1-100, --all for every page)
 
 Answer the studio with your own AI (Enhance, assistant, agent; no credits):
   next [--app "name"]           For an AI chat that answers the studio itself: wait for
@@ -79,7 +84,7 @@ Answer the studio with your own AI (Enhance, assistant, agent; no credits):
   agent-tool <id> <tool>        An agent request's read-only lookups
                                 (--input <json|@file.json>)
   One loop runs per account, on every device: a new one replaces it. A loop
-  stops after 15 minutes with no request.
+  stops after 10 minutes with no request.
 
 Generate flags:
   --<field> <value>             Any field from \`model get\`. Repeat for lists.
@@ -91,8 +96,8 @@ Generate flags:
   --wait-interval <sec>         Least time between checks, default 3
   --idempotency-key <key>       Resend safely: same key bills once
 
-Global: --json for machine-readable output (generate, model, folder, upload,
-account, auth status), --help, --version. auth login|logout|status also work without "auth".
+Global: --json for machine-readable output (generate, model, folder, library,
+upload, account, auth status), --help, --version. auth login|logout|status also work without "auth".
 `;
 
 // ── output ───────────────────────────────────────────────────────────────────
@@ -398,7 +403,12 @@ async function folderCommand(sub: string | undefined, args: Args) {
       folders.forEach((f) => print(`${f.id.padEnd(28)} ${String(f.count).padStart(5)}  ${f.name}`)),
     );
   }
-  if (sub !== "add") throw new Error("Use folder list | add.");
+  if (sub === "items") {
+    const [folder] = args.positional;
+    if (!folder?.trim()) throw new Error("Usage: ronana folder items <folder>");
+    return libraryCommand(args, folder);
+  }
+  if (sub !== "add") throw new Error("Use folder list | items | add.");
   const [folder, ...ids] = args.positional;
   if (!folder?.trim() || ids.length === 0)
     throw new Error("Usage: ronana folder add <folder> <id…>");
@@ -415,6 +425,44 @@ async function folderCommand(sub: string | undefined, args: Args) {
     if (filed.not_found?.length) note(`Not found: ${filed.not_found.join(", ")}`);
   });
   if (filed.not_found?.length) process.exitCode = 1;
+}
+
+interface LibraryItem { id: string; kind: string; source: string; label: string }
+/** --all stops here: a folder bigger than this is better read in pages. */
+const LIBRARY_ALL_MAX = 1000;
+
+/** One page of the library (or every page with --all, up to LIBRARY_ALL_MAX). */
+async function libraryCommand(args: Args, folder?: string) {
+  const input = libraryInput(args, folder);
+  const all = has(args, "all");
+  const items: LibraryItem[] = [];
+  let capped = false;
+  let next: string | null = null;
+  await withRemote(async (r) => {
+    let cursor: string | undefined;
+    for (;;) {
+      const page: { items: LibraryItem[]; next_cursor: string | null } = await callTool(r, "list_library", {
+        ...input,
+        ...(all ? { limit: 100 } : {}),
+        ...(cursor ? { cursor } : {}),
+      });
+      items.push(...page.items);
+      next = page.next_cursor;
+      if (!all || !next) break;
+      if (items.length >= LIBRARY_ALL_MAX) {
+        capped = true;
+        items.length = LIBRARY_ALL_MAX;
+        break;
+      }
+      cursor = next;
+    }
+  });
+  emit(items, () => {
+    if (!items.length) return print(folder || input.folder ? "Nothing in this folder." : "Nothing in your library yet.");
+    items.forEach((item) => print(`${item.id.padEnd(28)} ${item.kind.padEnd(6)} ${item.label}`));
+    if (capped) note(`Stopped at ${LIBRARY_ALL_MAX} items. Narrow it with --kind or --source.`);
+    else if (next && !all) note("More items: add --all to list every page.");
+  });
 }
 
 async function main() {
@@ -516,6 +564,8 @@ async function main() {
     case "folder":
     case "folders":
       return folderCommand(command === "folders" ? "list" : sub, args);
+    case "library":
+      return libraryCommand(args);
     case "next": {
       process.noDeprecation = true;
       // The detached "still working" helper a `next` run leaves behind.

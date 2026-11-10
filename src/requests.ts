@@ -150,12 +150,12 @@ export async function connectWithRetry(log: (line: string) => void): Promise<Rem
 }
 
 /** The server stopped this listener: another one started (`replaced`), or a
- *  chat loop had no request for 15 minutes (`idle`). It never restarts itself. */
+ *  chat loop had no request for 10 minutes (`idle`). It never restarts itself. */
 export class ListenerStopped extends Error {
   constructor(readonly reason: "replaced" | "idle") {
     super(
       reason === "idle"
-        ? "Listening stopped: no requests for 15 minutes."
+        ? "Listening stopped: no requests for 10 minutes."
         : "Listening stopped: another app or computer took over listening for this account.",
     );
   }
