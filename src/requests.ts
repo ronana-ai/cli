@@ -73,6 +73,17 @@ export interface AgentRequest extends Common {
   max_cards: number;
   card_schema: unknown;
   tools?: { name: string; description?: string; input_schema?: unknown }[];
+  /** The finished videos on their board, in board order. */
+  board_clips?: BoardClip[];
+}
+
+export interface BoardClip {
+  /** clip1, clip2… in board order. */
+  label: string;
+  /** A signed link, valid for 15 minutes from when the request was read. */
+  url?: string;
+  duration_s?: number;
+  prompt?: string;
 }
 export type StudioRequest = EnhanceRequest | AssistantRequest | AgentRequest;
 
@@ -86,7 +97,7 @@ export const REPLY_SHAPE: Record<StudioRequest["kind"], string> = {
   assistant:
     '{"message": "your answer", "prompt": "a prompt for their composer, only if your answer has one"}',
   agent:
-    '{"message": "what the user reads on their board", "cards": [ ...cards following card_schema in the request file ]}',
+    '{"message": "what the user reads on their board", "cards": [ ...cards following card_schema in the request file ], "local_file": {"path": "only if you saved an edited video on this computer"}}',
 };
 
 /* ── waiting ────────────────────────────────────────────────────────────── */
@@ -310,6 +321,8 @@ export interface RequestFiles {
   project?: string;
   /** Each attachment, with its local copy when the download worked. */
   references: { label: string; kind: string; file?: string; url?: string; duration_s?: number }[];
+  /** The board's finished videos, with each local copy when the download worked. */
+  clips?: { label: string; file?: string; duration_s?: number; prompt?: string }[];
 }
 
 /** Write a request's files into `dir` (sweeping old ones first). */
@@ -345,6 +358,23 @@ export async function saveRequestFiles(
       ...(reference.duration_s != null ? { duration_s: reference.duration_s } : {}),
     });
   }
+  // The board's videos, into their own folder so a clip can never share a
+  // name with an attachment. Only a copy that downloaded is offered for editing.
+  const boardClips = request.kind === "agent" ? (request.board_clips ?? []) : [];
+  if (boardClips.length) {
+    // Together: the chat waits on these before it sees the request at all.
+    files.clips = await Promise.all(
+      boardClips.map(async (clip) => {
+        const file = await downloadReference({ kind: "video", label: clip.label, url: clip.url }, join(dir, id, "board"), fetchImpl);
+        return {
+          label: clip.label,
+          ...(file ? { file } : {}),
+          ...(clip.duration_s != null ? { duration_s: clip.duration_s } : {}),
+          ...(clip.prompt ? { prompt: clip.prompt } : {}),
+        };
+      }),
+    );
+  }
   writeFileSync(
     files.request,
     JSON.stringify(
@@ -352,6 +382,7 @@ export async function saveRequestFiles(
         ...rest,
         ...(project ? { project: { label: project.label, file: files.project } } : {}),
         references: files.references,
+        ...(files.clips ? { board_clips: files.clips } : {}),
         ...extra,
       },
       null,

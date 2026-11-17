@@ -17,6 +17,12 @@ export function stateDir(
   return join(env.XDG_STATE_HOME || join(home, ".local", "state"), "ronana");
 }
 
+/** Where a video edited on this computer is saved: the user's own videos
+ *  folder, so they can find it without knowing where the CLI keeps state. */
+export function editsDir(platform: Platform = process.platform as Platform, home = homedir()): string {
+  return join(home, platform === "darwin" ? "Movies" : "Videos", "Ronana");
+}
+
 /** The temporary files each studio request leaves (swept after a day). */
 export const requestsDir = () => join(stateDir(), "requests");
 /** The Claude Code listener's ongoing conversation lives here. */
